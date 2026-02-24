@@ -253,7 +253,7 @@ authorclaw/
 
 ## Security
 
-AuthorClaw inherits MoatBot-grade security:
+AuthorClaw security features:
 
 - **Vault**: AES-256-GCM encrypted credential storage (scrypt KDF)
 - **Sandbox**: Workspace-only file access enforcement
@@ -289,7 +289,6 @@ AuthorClaw is open source and contributions are welcome! Whether you're an autho
 - **New Bridges** — Build integrations for Slack, WhatsApp, Matrix, etc.
 - **Dashboard Improvements** — The dashboard is a single HTML file — lots of room to grow
 - **Documentation** — Better guides, tutorials, and examples
-- **Author OS Tools** — Build new writing tools that integrate via the Author OS service
 
 ### How to Contribute
 
