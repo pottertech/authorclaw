@@ -287,6 +287,58 @@
     <button id="btnSaveHeartbeat">Save Heartbeat</button>
   </div>
 
+  <!-- Autonomous Mode -->
+  <div class="card">
+    <h3>&#129302; Autonomous Mode</h3>
+    <p class="hint" style="margin-bottom:12px;">When enabled, AuthorClaw wakes up on schedule, checks for active goals, and executes steps automatically. It respects quiet hours and stops when there's nothing to do.</p>
+
+    <div class="toggle-wrap" style="margin-bottom:16px;">
+      <label class="toggle">
+        <input type="checkbox" id="autonomousEnabled">
+        <span class="slider"></span>
+      </label>
+      <span style="font-size:14px;font-weight:600;" id="autonomousLabel">Autonomous Mode OFF</span>
+    </div>
+
+    <div id="autonomousStatusBanner" style="background:#1a1a2e;border:1px solid #0f3460;border-radius:8px;padding:12px;margin-bottom:14px;font-size:13px;">
+      <span id="autonomousStatusText" style="color:#7f8c8d;">Loading status...</span>
+    </div>
+
+    <div class="form-group-inline">
+      <div class="form-group">
+        <label>Wake Interval (minutes)</label>
+        <input type="number" id="autonomousInterval" min="5" max="1440" placeholder="30">
+        <p class="hint">How often AuthorClaw checks for work (default: 30)</p>
+      </div>
+      <div class="form-group">
+        <label>Max Steps Per Wake</label>
+        <input type="number" id="autonomousMaxSteps" min="1" max="50" placeholder="5">
+        <p class="hint">Safety limit &mdash; how many goal steps per cycle (default: 5)</p>
+      </div>
+    </div>
+
+    <div class="form-group-inline">
+      <div class="form-group">
+        <label>Quiet Hours Start (24h)</label>
+        <input type="number" id="autonomousQuietStart" min="0" max="23" placeholder="22">
+      </div>
+      <div class="form-group">
+        <label>Quiet Hours End (24h)</label>
+        <input type="number" id="autonomousQuietEnd" min="0" max="23" placeholder="7">
+      </div>
+    </div>
+    <p class="hint" style="margin-bottom:12px;">AuthorClaw won't wake up during quiet hours. Set both to 0 to disable.</p>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <button id="btnSaveAutonomous">Save Settings</button>
+      <button class="secondary" id="btnPauseAutonomous">&#9208;&#65039; Pause</button>
+      <button class="success" id="btnResumeAutonomous">&#9654;&#65039; Resume</button>
+    </div>
+
+    <div id="autonomousLog" style="margin-top:14px;max-height:200px;overflow-y:auto;background:#1a1a2e;border:1px solid #0f3460;border-radius:8px;padding:12px;font-size:12px;font-family:monospace;display:none;">
+    </div>
+  </div>
+
   <!-- Telegram Bridge -->
   <div class="card">
     <h3>&#128225; Telegram Integration</h3>
@@ -1380,10 +1432,125 @@ document.getElementById('btnStopConductor').addEventListener('click', function()
 });
 
 // ══════════════════════════════════════════════════════════════
+// AUTONOMOUS MODE
+// ══════════════════════════════════════════════════════════════
+
+function loadAutonomousStatus() {
+  api('GET', '/api/autonomous/status').then(function(data) {
+    // Toggle
+    var toggle = document.getElementById('autonomousEnabled');
+    toggle.checked = data.enabled;
+    var label = document.getElementById('autonomousLabel');
+    if (data.enabled && !data.paused) {
+      label.textContent = data.running ? 'Autonomous Mode WORKING...' : 'Autonomous Mode ON';
+      label.style.color = data.running ? '#2980b9' : '#27ae60';
+    } else if (data.enabled && data.paused) {
+      label.textContent = 'Autonomous Mode PAUSED';
+      label.style.color = '#f39c12';
+    } else {
+      label.textContent = 'Autonomous Mode OFF';
+      label.style.color = '#7f8c8d';
+    }
+
+    // Status banner
+    var statusEl = document.getElementById('autonomousStatusText');
+    var parts = [];
+    if (data.enabled) {
+      if (data.running) parts.push('<span style="color:#2980b9;">&#128260; Currently executing a goal step...</span>');
+      else if (data.paused) parts.push('<span style="color:#f39c12;">&#9208;&#65039; Paused</span>');
+      else parts.push('<span style="color:#27ae60;">&#9989; Active &mdash; next wake in ' + data.intervalMinutes + ' min</span>');
+    } else {
+      parts.push('<span style="color:#7f8c8d;">Disabled &mdash; toggle on to start</span>');
+    }
+    if (data.totalStepsExecuted > 0) {
+      parts.push('<br><span style="color:#bdc3c7;">Total: ' + data.totalStepsExecuted + ' steps, ~' + data.totalWordsGenerated.toLocaleString() + ' words generated</span>');
+    }
+    statusEl.innerHTML = parts.join('');
+
+    // Fill form fields (only if not user-edited)
+    var intervalEl = document.getElementById('autonomousInterval');
+    var maxStepsEl = document.getElementById('autonomousMaxSteps');
+    var quietStartEl = document.getElementById('autonomousQuietStart');
+    var quietEndEl = document.getElementById('autonomousQuietEnd');
+    if (!intervalEl._userEdited) intervalEl.value = data.intervalMinutes;
+    if (!maxStepsEl._userEdited) maxStepsEl.value = data.maxStepsPerWake;
+    if (!quietStartEl._userEdited && data.quietHoursStart !== undefined) quietStartEl.value = data.quietHoursStart;
+    if (!quietEndEl._userEdited && data.quietHoursEnd !== undefined) quietEndEl.value = data.quietHoursEnd;
+
+    // Log entries
+    var logEl = document.getElementById('autonomousLog');
+    if (data.recentLog && data.recentLog.length > 0) {
+      logEl.style.display = 'block';
+      logEl.innerHTML = '<div style="color:#e67e22;font-weight:600;margin-bottom:6px;">Recent Activity</div>' +
+        data.recentLog.slice(-10).reverse().map(function(entry) {
+          var time = new Date(entry.timestamp).toLocaleTimeString();
+          return '<div style="padding:3px 0;border-bottom:1px solid #0f3460;">' +
+            '<span style="color:#7f8c8d;">' + esc(time) + '</span> ' +
+            '<span>' + esc(entry.message) + '</span></div>';
+        }).join('');
+    } else if (data.enabled) {
+      logEl.style.display = 'block';
+      logEl.innerHTML = '<span style="color:#7f8c8d;">No activity yet &mdash; waiting for first wake cycle...</span>';
+    } else {
+      logEl.style.display = 'none';
+    }
+  }).catch(function() {
+    document.getElementById('autonomousStatusText').innerHTML = '<span style="color:#7f8c8d;">Could not load status</span>';
+  });
+}
+
+// Toggle on/off
+document.getElementById('autonomousEnabled').addEventListener('change', function() {
+  var enabled = this.checked;
+  var endpoint = enabled ? '/api/autonomous/enable' : '/api/autonomous/disable';
+  api('POST', endpoint).then(function(data) {
+    showToast(enabled ? 'Autonomous mode enabled!' : 'Autonomous mode disabled', enabled ? 'success' : 'info');
+    loadAutonomousStatus();
+  }).catch(function(e) {
+    showToast('Failed: ' + e.message, 'error');
+    loadAutonomousStatus(); // Revert toggle
+  });
+});
+
+// Save settings
+document.getElementById('btnSaveAutonomous').addEventListener('click', function() {
+  var interval = parseInt(document.getElementById('autonomousInterval').value);
+  var maxSteps = parseInt(document.getElementById('autonomousMaxSteps').value);
+  var quietStart = parseInt(document.getElementById('autonomousQuietStart').value);
+  var quietEnd = parseInt(document.getElementById('autonomousQuietEnd').value);
+
+  var body = {};
+  if (!isNaN(interval) && interval >= 5) body.intervalMinutes = interval;
+  if (!isNaN(maxSteps) && maxSteps >= 1) body.maxStepsPerWake = maxSteps;
+  if (!isNaN(quietStart)) body.quietHoursStart = quietStart;
+  if (!isNaN(quietEnd)) body.quietHoursEnd = quietEnd;
+
+  api('POST', '/api/autonomous/config', body).then(function() {
+    showToast('Autonomous settings saved!', 'success');
+    loadAutonomousStatus();
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
+
+// Pause/Resume
+document.getElementById('btnPauseAutonomous').addEventListener('click', function() {
+  api('POST', '/api/autonomous/pause').then(function() {
+    showToast('Autonomous mode paused', 'info');
+    loadAutonomousStatus();
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
+
+document.getElementById('btnResumeAutonomous').addEventListener('click', function() {
+  api('POST', '/api/autonomous/resume').then(function() {
+    showToast('Autonomous mode resumed!', 'success');
+    loadAutonomousStatus();
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
+
+// ══════════════════════════════════════════════════════════════
 // UTILITIES & INIT
 // ══════════════════════════════════════════════════════════════
 
-['budgetDaily', 'budgetMonthly', 'heartbeatInterval', 'heartbeatWordGoal', 'researchDomains', 'telegramUsers'].forEach(function(id) {
+['budgetDaily', 'budgetMonthly', 'heartbeatInterval', 'heartbeatWordGoal', 'researchDomains', 'telegramUsers', 'autonomousInterval', 'autonomousMaxSteps', 'autonomousQuietStart', 'autonomousQuietEnd'].forEach(function(id) {
   var el = document.getElementById(id);
   if (el) el.addEventListener('input', function() { el._userEdited = true; });
 });
@@ -1397,11 +1564,13 @@ loadTelegramStatus();
 loadGoalTemplates();
 loadGoals();
 loadAuthorOS();
+loadAutonomousStatus();
 
-// Poll progress every 3s, status every 15s, goals every 10s
+// Poll progress every 3s, status every 15s, goals every 10s, autonomous every 10s
 setInterval(pollProgress, 3000);
 setInterval(loadStatus, 15000);
 setInterval(loadGoals, 10000);
+setInterval(loadAutonomousStatus, 10000);
 
 pollProgress();
 </script>

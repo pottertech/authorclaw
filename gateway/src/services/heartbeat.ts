@@ -176,6 +176,8 @@ export class HeartbeatService {
     running: boolean;
     intervalMinutes: number;
     maxStepsPerWake: number;
+    quietHoursStart: number;
+    quietHoursEnd: number;
     totalStepsExecuted: number;
     totalWordsGenerated: number;
     recentLog: Array<{ timestamp: string; message: string }>;
@@ -186,6 +188,8 @@ export class HeartbeatService {
       running: this.isRunning,
       intervalMinutes: this.config.autonomousIntervalMinutes,
       maxStepsPerWake: this.config.maxAutonomousStepsPerWake,
+      quietHoursStart: this.config.quietHoursStart,
+      quietHoursEnd: this.config.quietHoursEnd,
       totalStepsExecuted: this.totalAutonomousSteps,
       totalWordsGenerated: this.totalAutonomousWords,
       recentLog: this.autonomousLog.slice(-20), // Last 20 entries
