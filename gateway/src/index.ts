@@ -893,6 +893,9 @@ class AuthorClawGateway {
         // Complete the step and advance
         const nextStep = gateway.goalEngine.completeStep(goalId, activeStep.id, aiResponse);
 
+        // Track words for Morning Briefing
+        gateway.heartbeat.addWords(wordCount);
+
         gateway.activityLog.log({
           type: 'step_completed',
           source: 'telegram',
@@ -934,9 +937,11 @@ class AuthorClawGateway {
         const totalSteps = goal.steps.length;
 
         while (true) {
-          if (gateway.telegram?.pauseRequested) {
-            gateway.telegram.pauseRequested = false;
-            gateway.goalEngine.pauseGoal(goalId);
+          // Check BOTH the bridge flag AND the goal's actual status
+          const currentGoal = gateway.goalEngine.getGoal(goalId);
+          if (gateway.telegram?.pauseRequested || currentGoal?.status === 'paused') {
+            gateway.telegram && (gateway.telegram.pauseRequested = false);
+            if (currentGoal?.status !== 'paused') gateway.goalEngine.pauseGoal(goalId);
             await statusCallback(`⏸ Paused at step ${stepNumber}/${totalSteps}. Say "continue" to resume.`);
             return;
           }

@@ -211,7 +211,9 @@ export class TTSService {
         .substring(0, 5000); // Limit to ~5000 chars (~5 min audio)
 
       // Generate WAV with Piper (using resolved full path)
-      const piperCmd = `echo '${sanitized}' | "${this.piperPath}" --model ${voice} --output_file "${wavFile}"`;
+      // --data-dir and --download-dir let piper auto-download voice models
+      const voiceDir = join(process.env.HOME || '/tmp', '.local', 'share', 'piper-voices');
+      const piperCmd = `echo '${sanitized}' | "${this.piperPath}" --model ${voice} --data-dir "${voiceDir}" --download-dir "${voiceDir}" --output_file "${wavFile}"`;
       await execAsync(piperCmd, { timeout: 120000 }); // 2 min timeout
 
       // Convert to OGG if requested (for Telegram voice messages)

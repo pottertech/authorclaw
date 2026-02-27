@@ -149,6 +149,15 @@ async function chat(message: string, retries = MAX_RETRIES, minLength = MIN_CONT
       }
 
       const data = await res.json() as any;
+
+      // Surface real API errors immediately instead of masking as "short response"
+      if (!res.ok || data.error) {
+        const errMsg = data.error || `HTTP ${res.status}`;
+        print(`    [api-error] ${errMsg} (attempt ${attempt}/${retries})`);
+        if (attempt < retries) { await sleep(5000 * attempt); continue; }
+        throw new Error(`API error after ${retries} attempts: ${errMsg}`);
+      }
+
       const response = data.response || '';
       lastResponse = response;
 
@@ -838,6 +847,11 @@ async function initializeConfig(): Promise<void> {
 // ═══════════════════════════════════════════════════════════
 
 async function main(): Promise<void> {
+  // Reset any stale stop signal from a previous run
+  try {
+    await fetch(`${API_BASE}/api/conductor/start`, { method: 'POST' });
+  } catch { /* gateway might not be running yet */ }
+
   // Initialize config before anything else (reads from dashboard or falls back)
   await initializeConfig();
 

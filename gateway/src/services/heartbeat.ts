@@ -541,6 +541,14 @@ export class HeartbeatService {
     return { duration, wordsWritten };
   }
 
+  /** Add words to today's count (called by goal engine after each step) */
+  addWords(count: number): void {
+    if (count > 0) {
+      this.todayWords += count;
+      this.lastWritingDate = new Date().toISOString().split('T')[0];
+    }
+  }
+
   /** Structured stats for dashboard Morning Briefing */
   getStats(): {
     todayWords: number; dailyWordGoal: number; streak: number;

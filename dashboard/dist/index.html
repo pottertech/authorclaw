@@ -264,7 +264,7 @@
       </div>
       <div class="briefing-item">
         <div class="b-value" id="briefStreak">0</div>
-        <div class="b-label">Day Streak</div>
+        <div class="b-label">Goals Done</div>
       </div>
     </div>
     <div id="briefSummary" style="font-size:13px;color:#bdc3c7;line-height:1.6;"></div>
@@ -1395,10 +1395,10 @@ function loadGoals() {
       }
 
       if (g.status === 'paused') {
-        var resumeBtn = document.createElement('button');
-        resumeBtn.className = 'success'; resumeBtn.textContent = 'Resume';
-        resumeBtn.addEventListener('click', function() { startGoal(g.id); });
-        actions.appendChild(resumeBtn);
+        var resumeAutoBtn = document.createElement('button');
+        resumeAutoBtn.className = 'success'; resumeAutoBtn.textContent = '▶ Resume & Auto-Execute';
+        resumeAutoBtn.addEventListener('click', function() { autoExecuteGoal(g.id); });
+        actions.appendChild(resumeAutoBtn);
       }
 
       var deleteBtn = document.createElement('button');
@@ -1880,10 +1880,13 @@ document.getElementById('chatInput').addEventListener('input', function() {
 
 // ── Morning Briefing ──
 function loadHomeBriefing() {
-  // Fetch goals
+  // Fetch goals — show active count AND completed count
   api('GET', '/api/goals').then(function(data) {
-    var activeGoals = (data.goals || []).filter(function(g) { return g.status === 'active' || g.status === 'pending'; });
+    var allGoals = data.goals || [];
+    var activeGoals = allGoals.filter(function(g) { return g.status === 'active' || g.status === 'pending'; });
+    var completedGoals = allGoals.filter(function(g) { return g.status === 'completed'; });
     document.getElementById('briefGoals').textContent = activeGoals.length;
+    document.getElementById('briefStreak').textContent = completedGoals.length;
   }).catch(function() {});
 
   // Fetch autonomous status for steps/words

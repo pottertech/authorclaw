@@ -601,6 +601,8 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
         } catch { /* non-fatal */ }
 
         goalsEngine.completeStep(currentGoal.id, activeStep.id, response);
+        // Track words for Morning Briefing
+        services.heartbeat.addWords(wordCount);
         results.push({ step: activeStep.label, success: true, wordCount });
       } catch (error) {
         goalsEngine.failStep(currentGoal.id, activeStep.id, String(error));
