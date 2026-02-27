@@ -59,9 +59,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       autonomous: services.heartbeat.getAutonomousStatus(),
       permissions: services.permissions.preset,
       cache: services.aiRouter.getCacheStats(),
-      tts: {
-        available: services.tts?.isAvailable() || false,
-      },
+      // TTS hidden from status (feature removed from UI)
     });
   });
 
@@ -420,12 +418,63 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
   // Goal Engine (autonomous goal-based task planning)
   // ═══════════════════════════════════════════════════════════
 
-  app.get('/api/goals/templates', (_req: Request, res: Response) => {
+  app.get('/api/goals/templates', async (_req: Request, res: Response) => {
     const goals = gateway.getGoalEngine?.();
     if (!goals) {
       return res.status(503).json({ error: 'Goal engine not initialized' });
     }
-    res.json({ templates: goals.getTemplates() });
+    // Merge built-in templates with custom templates
+    const builtIn = goals.getTemplates();
+    const { join: j } = await import('path');
+    const { readFile: rf } = await import('fs/promises');
+    const { existsSync: ex } = await import('fs');
+    const customPath = j(baseDir, 'workspace', '.config', 'custom-goal-templates.json');
+    let custom: any[] = [];
+    if (ex(customPath)) {
+      try { custom = JSON.parse(await rf(customPath, 'utf-8')); } catch { /* ok */ }
+    }
+    const customMapped = custom.map((t: any) => ({
+      ...t, label: t.title, stepCount: 0, custom: true,
+    }));
+    res.json({ templates: [...builtIn, ...customMapped] });
+  });
+
+  // Save a custom goal template
+  app.post('/api/goals/templates', async (req: Request, res: Response) => {
+    const { title, description, type } = req.body;
+    if (!title || !description) {
+      return res.status(400).json({ error: 'title and description required' });
+    }
+    const { join: j } = await import('path');
+    const { readFile: rf, writeFile: wf, mkdir: mkd } = await import('fs/promises');
+    const { existsSync: ex } = await import('fs');
+    const { randomBytes } = await import('crypto');
+    const configDir = j(baseDir, 'workspace', '.config');
+    await mkd(configDir, { recursive: true });
+    const customPath = j(configDir, 'custom-goal-templates.json');
+    let custom: any[] = [];
+    if (ex(customPath)) {
+      try { custom = JSON.parse(await rf(customPath, 'utf-8')); } catch { /* ok */ }
+    }
+    custom.push({ id: randomBytes(6).toString('hex'), title, description, type: type || 'general', createdAt: new Date().toISOString() });
+    await wf(customPath, JSON.stringify(custom, null, 2));
+    res.json({ success: true });
+  });
+
+  // Delete a custom goal template
+  app.delete('/api/goals/templates/:id', async (req: Request, res: Response) => {
+    const { join: j } = await import('path');
+    const { readFile: rf, writeFile: wf } = await import('fs/promises');
+    const { existsSync: ex } = await import('fs');
+    const customPath = j(baseDir, 'workspace', '.config', 'custom-goal-templates.json');
+    if (!ex(customPath)) {
+      return res.json({ success: false, error: 'No custom templates' });
+    }
+    let custom: any[] = [];
+    try { custom = JSON.parse(await rf(customPath, 'utf-8')); } catch { /* ok */ }
+    custom = custom.filter((t: any) => t.id !== req.params.id);
+    await wf(customPath, JSON.stringify(custom, null, 2));
+    res.json({ success: true });
   });
 
   // Create a new goal — supports dynamic AI planning
@@ -604,6 +653,10 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
         // Track words for Morning Briefing
         services.heartbeat.addWords(wordCount);
         results.push({ step: activeStep.label, success: true, wordCount });
+
+        // Re-check pause AFTER step completes (catches /stop sent during long AI call)
+        const freshGoal = goalsEngine.getGoal(req.params.id);
+        if (freshGoal?.status === 'paused' || freshGoal?.status === 'completed') break;
       } catch (error) {
         goalsEngine.failStep(currentGoal.id, activeStep.id, String(error));
         results.push({ step: activeStep.label, success: false, error: String(error) });
@@ -1073,7 +1126,9 @@ ${sourceCode.substring(0, 15000)}
         console.log(`[conductor] Process exited with code ${code}`);
         conductorProcess = null;
         if (conductorState.phase !== 'Complete!') {
-          conductorState = { phase: code === 0 ? 'Complete!' : 'Stopped', step: `Exit code: ${code}`, progress: conductorState.progress || {} };
+          const exitPhase = code === 0 ? 'Complete!' : code === 2 ? 'Stopped (user)' : 'Stopped';
+          const exitStep = code === 0 ? 'Finished successfully' : code === 2 ? 'Stopped by user' : `Exit code: ${code}`;
+          conductorState = { phase: exitPhase, step: exitStep, progress: conductorState.progress || {} };
         }
       });
 
@@ -1120,6 +1175,58 @@ ${sourceCode.substring(0, 15000)}
       } catch { /* fall through */ }
     }
     res.json({});
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // Project Config Templates (saved configurations)
+  // ═══════════════════════════════════════════════════════════
+
+  app.get('/api/conductor/config-templates', async (_req: Request, res: Response) => {
+    const { join: j } = await import('path');
+    const { readFile: rf } = await import('fs/promises');
+    const { existsSync: ex } = await import('fs');
+    const templatesPath = j(baseDir, 'workspace', '.config', 'project-config-templates.json');
+    let templates: any[] = [];
+    if (ex(templatesPath)) {
+      try { templates = JSON.parse(await rf(templatesPath, 'utf-8')); } catch { /* ok */ }
+    }
+    res.json({ templates });
+  });
+
+  app.post('/api/conductor/config-templates', async (req: Request, res: Response) => {
+    const { name, config } = req.body;
+    if (!name) {
+      return res.status(400).json({ error: 'name required' });
+    }
+    const { join: j } = await import('path');
+    const { readFile: rf, writeFile: wf, mkdir: mkd } = await import('fs/promises');
+    const { existsSync: ex } = await import('fs');
+    const { randomBytes } = await import('crypto');
+    const configDir = j(baseDir, 'workspace', '.config');
+    await mkd(configDir, { recursive: true });
+    const templatesPath = j(configDir, 'project-config-templates.json');
+    let templates: any[] = [];
+    if (ex(templatesPath)) {
+      try { templates = JSON.parse(await rf(templatesPath, 'utf-8')); } catch { /* ok */ }
+    }
+    templates.push({ id: randomBytes(6).toString('hex'), name, config: config || {}, createdAt: new Date().toISOString() });
+    await wf(templatesPath, JSON.stringify(templates, null, 2));
+    res.json({ success: true });
+  });
+
+  app.delete('/api/conductor/config-templates/:id', async (req: Request, res: Response) => {
+    const { join: j } = await import('path');
+    const { readFile: rf, writeFile: wf } = await import('fs/promises');
+    const { existsSync: ex } = await import('fs');
+    const templatesPath = j(baseDir, 'workspace', '.config', 'project-config-templates.json');
+    if (!ex(templatesPath)) {
+      return res.json({ success: false, error: 'No config templates' });
+    }
+    let templates: any[] = [];
+    try { templates = JSON.parse(await rf(templatesPath, 'utf-8')); } catch { /* ok */ }
+    templates = templates.filter((t: any) => t.id !== req.params.id);
+    await wf(templatesPath, JSON.stringify(templates, null, 2));
+    res.json({ success: true });
   });
 
   // ═══════════════════════════════════════════════════════════

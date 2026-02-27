@@ -229,10 +229,15 @@ async function updateDashboard(phase: string, step: string, extra: any = {}): Pr
     });
     const data = await resp.json() as any;
     if (data.stopRequested) {
-      console.log('\n  🛑 Stop requested from dashboard — shutting down gracefully...');
-      process.exit(0);
+      print(`\n  🛑 Stop requested from dashboard during "${phase}" / "${step}" — saving state and exiting...`);
+      await saveState();
+      await log(phase, 'Stopped', 'User requested stop from dashboard.');
+      process.exit(2); // Exit code 2 = user-requested stop (distinct from 0=success, 1=error)
     }
-  } catch { /* silent */ }
+  } catch (err: any) {
+    // Log dashboard communication errors (don't let them kill the pipeline)
+    print(`    [dashboard] Status update failed: ${err?.message || 'unknown'} (continuing anyway)`);
+  }
 }
 
 /**
@@ -847,10 +852,19 @@ async function initializeConfig(): Promise<void> {
 // ═══════════════════════════════════════════════════════════
 
 async function main(): Promise<void> {
-  // Reset any stale stop signal from a previous run
-  try {
-    await fetch(`${API_BASE}/api/conductor/start`, { method: 'POST' });
-  } catch { /* gateway might not be running yet */ }
+  // Reset any stale stop signal from a previous run (retry up to 3 times)
+  for (let i = 0; i < 3; i++) {
+    try {
+      const resetResp = await fetch(`${API_BASE}/api/conductor/start`, { method: 'POST' });
+      if (resetResp.ok) {
+        print('  [ok] Stop flag cleared');
+        break;
+      }
+    } catch {
+      if (i < 2) await sleep(1000);
+      else print('  [warn] Could not reset stop flag — gateway may not be running');
+    }
+  }
 
   // Initialize config before anything else (reads from dashboard or falls back)
   await initializeConfig();
@@ -879,15 +893,34 @@ async function main(): Promise<void> {
     print(`    Chapters: ${state.chaptersComplete}/${TOTAL_CHAPTERS}`);
   }
 
+  const phases = [
+    { name: 'Phase 0: Health Check', fn: phase0_healthCheck },
+    { name: 'Phase 1: Premise', fn: phase1_premise },
+    { name: 'Phase 2: Book Bible', fn: phase2_bookBible },
+    { name: 'Phase 3: Outline', fn: phase3_outline },
+    { name: 'Phase 4: Writing', fn: phase4_writing },
+    { name: 'Phase 5: Revision', fn: phase5_revision },
+    { name: 'Phase 6: Assembly', fn: phase6_assembly },
+    { name: 'Phase 7: Report', fn: phase7_report },
+  ];
+
   try {
-    await phase0_healthCheck();
-    await phase1_premise();
-    await phase2_bookBible();
-    await phase3_outline();
-    await phase4_writing();
-    await phase5_revision();
-    await phase6_assembly();
-    await phase7_report();
+    for (const phase of phases) {
+      try {
+        await phase.fn();
+      } catch (phaseErr: any) {
+        print(`\n  [ERROR] ${phase.name} failed: ${phaseErr.message}`);
+        await log(phase.name, 'Phase failed', `Error: ${phaseErr.message}`);
+        await updateDashboard(phase.name, `FAILED: ${phaseErr.message}`);
+        await saveState();
+        // Phase 0 (health check) is fatal — can't continue without it
+        if (phase.name.includes('Phase 0')) {
+          throw phaseErr;
+        }
+        // For other phases, log and re-throw to save state cleanly
+        throw phaseErr;
+      }
+    }
 
     await updateDashboard('Complete!', `${state.wordCount.toLocaleString()} words written`, {});
 

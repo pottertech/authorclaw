@@ -190,7 +190,7 @@ class AuthorClawGateway {
       console.log('  ⚠ Author OS: no tools found (mount to /app/author-os or ~/author-os)');
     }
 
-    // ── Phase 6c: TTS Service (Piper) ──
+    // ── Phase 6c: TTS Service (Piper) — silent init, optional feature ──
     this.tts = new TTSService(join(ROOT_DIR, 'workspace'));
     await this.tts.initialize();
 
@@ -947,6 +947,15 @@ class AuthorClawGateway {
           }
 
           const result = await this.startAndRunGoal(goalId);
+
+          // Re-check pause AFTER step completes (catches /stop sent during long AI call)
+          const afterStepGoal = gateway.goalEngine.getGoal(goalId);
+          if (gateway.telegram?.pauseRequested || afterStepGoal?.status === 'paused') {
+            gateway.telegram && (gateway.telegram.pauseRequested = false);
+            if (afterStepGoal?.status !== 'paused') gateway.goalEngine.pauseGoal(goalId);
+            await statusCallback(`⏸ Paused at step ${stepNumber}/${totalSteps}. Say "continue" to resume.`);
+            return;
+          }
 
           if ('error' in result) {
             await statusCallback(`⚠️ Step ${stepNumber}/${totalSteps} failed: ${result.error}`);

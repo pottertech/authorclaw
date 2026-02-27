@@ -129,8 +129,6 @@ export class TelegramBridge {
         `/files — List files (numbered)\n` +
         `/read [# or name] — Read a file\n` +
         `/export [# or name] — Export to Word/EPUB/PDF\n` +
-        `/speak [text] — Text-to-speech voice\n` +
-        `/voice — List/change TTS voice\n` +
         `/stop — Stop everything\n` +
         `/stop goal — Stop goal only\n` +
         `/stop conductor — Stop conductor only\n\n` +
@@ -435,134 +433,6 @@ export class TelegramBridge {
       return;
     }
 
-    // ── /voice — List and change TTS voice ──
-    if (text.startsWith('/voice')) {
-      const input = text.replace(/^\/voice\s*/, '').trim();
-
-      try {
-        const voicesRes = await fetch('http://localhost:3847/api/audio/voices');
-        const voicesData = await voicesRes.json() as any;
-
-        if (!input) {
-          // List voices
-          let msg = `🎙️ *TTS Voices*\n\n`;
-          msg += `*Current:* ${voicesData.activeVoice || 'en_US-lessac-medium'}\n\n`;
-
-          if (voicesData.knownVoices) {
-            msg += `*Available voices:*\n`;
-            let num = 1;
-            for (const [name, desc] of Object.entries(voicesData.knownVoices)) {
-              const active = name === voicesData.activeVoice ? ' ← active' : '';
-              msg += `  ${num}. ${desc as string}${active}\n`;
-              num++;
-            }
-            msg += `\n💡 Set voice: /voice 1 or /voice en_US-lessac-high`;
-          }
-
-          if (!voicesData.available) {
-            msg += `\n\n⚠️ Piper TTS not installed. Run: pip3 install piper-tts`;
-          }
-          await this.sendMessage(chatId, msg);
-        } else {
-          // Set voice — by number or by name
-          let voiceName = input;
-
-          // Check if it's a number
-          const num = parseInt(input, 10);
-          if (!isNaN(num) && voicesData.knownVoices) {
-            const voiceNames = Object.keys(voicesData.knownVoices);
-            if (num >= 1 && num <= voiceNames.length) {
-              voiceName = voiceNames[num - 1];
-            }
-          }
-
-          const setRes = await fetch('http://localhost:3847/api/audio/voice', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ voice: voiceName }),
-          });
-          const setData = await setRes.json() as any;
-
-          if (setData.success) {
-            const desc = voicesData.knownVoices?.[voiceName] || voiceName;
-            await this.sendMessage(chatId, `✅ Voice set to: ${desc}\n\nThis persists across restarts. Try it: /speak Hello, this is my new voice!`);
-          } else {
-            await this.sendMessage(chatId, `❌ ${setData.error || 'Failed to set voice'}`);
-          }
-        }
-      } catch (e) {
-        await this.sendMessage(chatId, `❌ Voice error: ${String(e)}`);
-      }
-      return;
-    }
-
-    // ── /speak — Text-to-speech via Piper (sends Telegram voice message) ──
-    if (text.startsWith('/speak') || text.startsWith('/tts')) {
-      const input = text.replace(/^\/(speak|tts)\s*/, '').trim();
-      if (!input) {
-        await this.sendMessage(chatId, `🔊 What should I read aloud?\n\n/speak The detective stepped into the library...\n/speak chapter 3 — reads chapter 3 aloud`);
-        return;
-      }
-
-      try {
-        // Check if TTS is available
-        const statusRes = await fetch('http://localhost:3847/api/status');
-        const status = await statusRes.json() as any;
-        if (!status.tts?.available) {
-          await this.sendMessage(chatId, `🔇 TTS not available yet. Install Piper TTS on the server:\n\`pip3 install piper-tts\``);
-          return;
-        }
-
-        // Check if user wants to read a file (e.g., "/speak chapter 3")
-        let textToSpeak = input;
-        const chapterMatch = input.match(/^chapter\s+(\d+)/i);
-        if (chapterMatch && this.commandHandlers) {
-          const chapterNum = chapterMatch[1];
-          // Try common chapter file patterns
-          const patterns = [
-            `chapters/chapter-${chapterNum}.md`,
-            `chapters/chapter-${chapterNum.padStart(2, '0')}.md`,
-            `chapters/ch${chapterNum}.md`,
-          ];
-          let found = false;
-          for (const pattern of patterns) {
-            try {
-              const result = await this.commandHandlers.readFile(pattern);
-              if (!result.error) {
-                textToSpeak = result.content.substring(0, 5000); // Limit for TTS
-                found = true;
-                break;
-              }
-            } catch { /* try next pattern */ }
-          }
-          if (!found) {
-            await this.sendMessage(chatId, `📄 Couldn't find chapter ${chapterNum}. Use /files to see available files.`);
-            return;
-          }
-        }
-
-        await this.sendMessage(chatId, `🔊 Generating audio...`);
-
-        // Call TTS API
-        const ttsRes = await fetch('http://localhost:3847/api/audio/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: textToSpeak, format: 'ogg' }),
-        });
-        const ttsData = await ttsRes.json() as any;
-
-        if (ttsData.success && ttsData.file) {
-          // Send as Telegram voice message
-          await this.sendVoiceMessage(chatId, ttsData.file, textToSpeak.substring(0, 100));
-        } else {
-          await this.sendMessage(chatId, `❌ ${ttsData.error || 'TTS generation failed'}`);
-        }
-      } catch (e) {
-        await this.sendMessage(chatId, `❌ TTS error: ${String(e)}`);
-      }
-      return;
-    }
-
     // ── /stop — Stop conductor, goal, or both. Supports: /stop, /stop goal, /stop conductor ──
     if (text.startsWith('/stop') || text.startsWith('/pause')) {
       const arg = text.replace(/^\/(stop|pause)\s*/, '').trim().toLowerCase();
@@ -693,57 +563,6 @@ export class TelegramBridge {
       remaining = remaining.substring(splitAt);
     }
     return chunks;
-  }
-
-  /**
-   * Send a voice message (audio file) to a Telegram chat.
-   * Used by /speak and /tts commands for text-to-speech output.
-   */
-  async sendVoiceMessage(chatId: number, filePath: string, caption?: string): Promise<void> {
-    try {
-      const { readFile } = await import('fs/promises');
-      const audioBuffer = await readFile(filePath);
-      const filename = filePath.endsWith('.ogg') ? 'voice.ogg' : 'voice.wav';
-
-      // Build multipart form data manually for Telegram sendVoice API
-      const boundary = '----TelegramVoice' + Date.now();
-      const parts: Buffer[] = [];
-
-      // Chat ID part
-      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`));
-
-      // Caption part (optional)
-      if (caption) {
-        const shortCaption = caption.length > 200 ? caption.substring(0, 200) + '...' : caption;
-        parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n🔊 ${shortCaption}\r\n`));
-      }
-
-      // Voice file part
-      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="voice"; filename="${filename}"\r\nContent-Type: ${filename.endsWith('.ogg') ? 'audio/ogg' : 'audio/wav'}\r\n\r\n`));
-      parts.push(audioBuffer);
-      parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-      const body = Buffer.concat(parts);
-
-      const response = await fetch(`https://api.telegram.org/bot${this.token}/sendVoice`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'Content-Length': String(body.length),
-        },
-        body,
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        console.error('Telegram sendVoice failed:', errText);
-        // Fall back to sending as document if voice fails
-        await this.sendMessage(chatId, `🔊 Audio generated but couldn't send as voice message. File saved at: ${filePath}`);
-      }
-    } catch (error) {
-      console.error('sendVoiceMessage error:', error);
-      await this.sendMessage(chatId, `🔊 Audio generated at: ${filePath}\n(Voice sending failed: ${String(error)})`);
-    }
   }
 
   /** Update allowed users on a live bridge (called when dashboard saves users) */

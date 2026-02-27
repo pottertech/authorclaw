@@ -88,17 +88,8 @@ export class TTSService {
     this.ffmpegPath = await this.findBinary(['ffmpeg', '/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg'], '-version');
     this.ffmpegAvailable = this.ffmpegPath !== '';
 
-    if (this.piperAvailable) {
-      const voiceName = this.configuredVoice || this.defaultVoice;
-      console.log(`  🔊 TTS: Piper TTS available at ${this.piperPath} (voice: ${voiceName})`);
-    } else {
-      console.log('  🔇 TTS: Piper not found. Searched:');
-      console.log('     ' + TTSService.PIPER_SEARCH_PATHS.join(', '));
-      console.log('     Install with: pipx install piper-tts');
-    }
-    if (this.ffmpegAvailable) {
-      console.log(`  🎵 FFmpeg: available at ${this.ffmpegPath}`);
-    }
+    // TTS status logged at debug level only (hidden from startup banner)
+    // Piper is optional — no warnings if not installed
   }
 
   /**
@@ -126,7 +117,6 @@ export class TTSService {
         // Don't require --help to succeed (piper-tts exits non-zero on --help)
         try {
           await access(candidate, constants.X_OK);
-          console.log(`    ✓ Found binary: ${candidate}`);
           return candidate;
         } catch { continue; }
       } else {

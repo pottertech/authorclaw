@@ -196,7 +196,7 @@ export class HeartbeatService {
       quietHoursStart: this.config.quietHoursStart,
       quietHoursEnd: this.config.quietHoursEnd,
       totalStepsExecuted: this.totalAutonomousSteps,
-      totalWordsGenerated: this.totalAutonomousWords,
+      totalWordsGenerated: Math.max(this.totalAutonomousWords, this.todayWords),
       recentLog: this.autonomousLog.slice(-20), // Last 20 entries
     };
   }
