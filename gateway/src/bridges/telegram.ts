@@ -25,12 +25,14 @@ interface CommandHandlers {
 export class TelegramBridge {
   private token: string;
   private config: TelegramConfig;
-  private pollingInterval: ReturnType<typeof setInterval> | null = null;
+  private pollingInterval: ReturnType<typeof setInterval> | null = null; // Legacy compat
+  private polling = false;
   private messageHandler?: (content: string, channel: string, respond: (text: string) => void) => Promise<void>;
   private commandHandlers?: CommandHandlers;
   private lastUpdateId = 0;
   public pauseRequested = false;
   private knownChatIds: Set<number> = new Set(); // Track chat IDs for broadcasting
+  private lastFileList: string[] = []; // For /read # file picker
 
   constructor(token: string, config: Partial<TelegramConfig>) {
     this.token = token;
@@ -56,15 +58,30 @@ export class TelegramBridge {
       throw new Error('Invalid Telegram bot token');
     }
 
-    // Start polling
-    this.pollingInterval = setInterval(() => this.poll(), 2000);
+    // Start sequential polling (not setInterval — prevents duplicate message processing)
+    this.polling = true;
+    this.pollLoop();
+  }
+
+  private async pollLoop(): Promise<void> {
+    while (this.polling) {
+      await this.poll();
+      // Small delay between polls to prevent tight loops on errors
+      if (this.polling) await new Promise(r => setTimeout(r, 500));
+    }
   }
 
   private async poll(): Promise<void> {
     try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 35000); // slightly longer than Telegram timeout
+
       const response = await fetch(
-        `https://api.telegram.org/bot${this.token}/getUpdates?offset=${this.lastUpdateId + 1}&timeout=30`
+        `https://api.telegram.org/bot${this.token}/getUpdates?offset=${this.lastUpdateId + 1}&timeout=30`,
+        { signal: controller.signal }
       );
+      clearTimeout(timer);
+
       const data = await response.json() as any;
 
       for (const update of data.result || []) {
@@ -89,7 +106,8 @@ export class TelegramBridge {
         // Route to appropriate handler
         await this.handleInput(chatId, message.text, userName);
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return; // Normal timeout, just retry
       console.error('Telegram poll error:', error);
     }
   }
@@ -102,16 +120,18 @@ export class TelegramBridge {
         `✍️ Hey ${userName}! I'm AuthorClaw.\n\n` +
         `Tell me what to do and I'll figure out the steps.\n\n` +
         `*Commands:*\n` +
-        `/conductor — Launch the book conductor pipeline\n` +
-        `/goal [task] — Tell me what to do (I'll plan the steps)\n` +
-        `/write [idea] — Plan & write a book (autonomous)\n` +
-        `/goals — See all goals\n` +
-        `/status — Quick status check\n` +
-        `/research [topic] — Research from whitelisted sites\n` +
-        `/files [folder] — List project files\n` +
-        `/read [filename] — Read a file snippet\n` +
-        `/speak [text] — Read text aloud (TTS voice message)\n` +
-        `/stop — Pause active goal / stop conductor\n\n` +
+        `/conductor — Launch the book conductor\n` +
+        `/goal [task] — Plan & auto-execute a task\n` +
+        `/write [idea] — Plan & write a book\n` +
+        `/goals — List all goals\n` +
+        `/status — Status (conductor + goals)\n` +
+        `/research [topic] — Research a topic\n` +
+        `/files — List files (numbered)\n` +
+        `/read [# or name] — Read a file\n` +
+        `/speak [text] — Text-to-speech voice\n` +
+        `/stop — Stop everything\n` +
+        `/stop goal — Stop goal only\n` +
+        `/stop conductor — Stop conductor only\n\n` +
         `Or just chat with me.`);
       return;
     }
@@ -168,8 +188,24 @@ export class TelegramBridge {
       return;
     }
 
+    // ── /goals — List active goals (MUST be before /goal to avoid parsing as "/goal s") ──
+    if (text === '/goals' || text.startsWith('/goals ')) {
+      if (this.commandHandlers) {
+        const goals = this.commandHandlers.listGoals();
+        if (goals.length === 0) {
+          await this.sendMessage(chatId, `No goals yet. Create one with /goal or /write`);
+        } else {
+          const list = goals.map(g =>
+            `${g.status === 'completed' ? '✅' : g.status === 'active' ? '🔄' : g.status === 'failed' ? '❌' : '⏸'} ${g.title} (${g.progress})`
+          ).join('\n');
+          await this.sendMessage(chatId, `📋 *Goals:*\n${list}`);
+        }
+      }
+      return;
+    }
+
     // ── /goal — Create ANY goal and AUTO-RUN all steps ──
-    if (text.startsWith('/goal')) {
+    if (text.startsWith('/goal ') || text === '/goal') {
       const description = text.replace(/^\/goal\s*/, '').trim();
       if (!description) {
         await this.sendMessage(chatId,
@@ -194,22 +230,6 @@ export class TelegramBridge {
           });
         } catch (e) {
           await this.sendMessage(chatId, `❌ ${String(e)}`);
-        }
-      }
-      return;
-    }
-
-    // ── /goals — List active goals ──
-    if (text.startsWith('/goals')) {
-      if (this.commandHandlers) {
-        const goals = this.commandHandlers.listGoals();
-        if (goals.length === 0) {
-          await this.sendMessage(chatId, `No goals yet. Create one with /goal or /write`);
-        } else {
-          const list = goals.map(g =>
-            `${g.status === 'completed' ? '✅' : g.status === 'active' ? '🔄' : g.status === 'failed' ? '❌' : '⏸'} ${g.title} (${g.progress})`
-          ).join('\n');
-          await this.sendMessage(chatId, `📋 *Goals:*\n${list}`);
         }
       }
       return;
@@ -282,16 +302,32 @@ export class TelegramBridge {
       return;
     }
 
-    // ── /files — List project files ──
+    // ── /files — List project files with NUMBERED list for easy /read ──
     if (text.startsWith('/files')) {
       const subdir = text.replace(/^\/files\s*/, '').trim() || '';
       if (this.commandHandlers) {
         try {
           const files = await this.commandHandlers.listFiles(subdir);
           if (files.length === 0) {
-            await this.sendMessage(chatId, `📁 No files found${subdir ? ` in ${subdir}` : ''}. Create a goal to generate content.`);
+            await this.sendMessage(chatId, `📁 No files found${subdir ? ` in ${subdir}` : ''}.\n\nFiles are saved to workspace/projects/ when you use /goal or /write.\nResearch goes to workspace/research/.`);
           } else {
-            await this.sendMessage(chatId, `📁 *Files${subdir ? ` in ${subdir}` : ''}:*\n${files.map(f => `• ${f}`).join('\n')}`);
+            // Store file list for /read # selection
+            this.lastFileList = files
+              .filter(f => !f.includes('📁'))  // Only actual files, not directories
+              .map(f => f.replace(/^[\s📄]+/, '').trim());
+
+            let msg = `📁 *Files${subdir ? ` in ${subdir}` : ''}:*\n`;
+            let fileNum = 1;
+            for (const f of files) {
+              if (f.includes('📁')) {
+                msg += `\n${f}\n`;
+              } else {
+                msg += `  ${fileNum}. ${f.replace(/^[\s📄]+/, '').trim()}\n`;
+                fileNum++;
+              }
+            }
+            msg += `\n💡 Use /read 1 or /read 3 to read by number`;
+            await this.sendMessage(chatId, msg);
           }
         } catch (e) {
           await this.sendMessage(chatId, `❌ ${String(e)}`);
@@ -300,21 +336,29 @@ export class TelegramBridge {
       return;
     }
 
-    // ── /read — Read a file snippet ──
+    // ── /read — Read a file by NUMBER or name ──
     if (text.startsWith('/read')) {
-      const filename = text.replace(/^\/read\s*/, '').trim();
-      if (!filename) {
-        await this.sendMessage(chatId, `Which file? Use /files to list them first.\n/read projects/my-book/premise.md`);
+      const input = text.replace(/^\/read\s*/, '').trim();
+      if (!input) {
+        await this.sendMessage(chatId, `📖 Use /files first to see numbered list, then:\n/read 1 — read file #1\n/read 3 — read file #3\n\nOr use full name:\n/read projects/my-book/premise.md`);
         return;
       }
+
       if (this.commandHandlers) {
         try {
+          // Check if input is a number (file picker)
+          let filename = input;
+          const num = parseInt(input, 10);
+          if (!isNaN(num) && this.lastFileList && num >= 1 && num <= this.lastFileList.length) {
+            filename = this.lastFileList[num - 1];
+          }
+
           const result = await this.commandHandlers.readFile(filename);
           if (result.error) {
-            await this.sendMessage(chatId, `⚠️ ${result.error}`);
+            await this.sendMessage(chatId, `⚠️ ${result.error}\n\n💡 Use /files first, then /read 1 to read by number.`);
           } else {
-            const preview = result.content.length > 3000
-              ? result.content.substring(0, 3000) + `\n\n... (${result.content.length} chars total — view full file in dashboard)`
+            const preview = result.content.length > 2000
+              ? result.content.substring(0, 2000) + `\n\n... (${result.content.length} chars total — view full in dashboard)`
               : result.content;
             await this.sendMessage(chatId, `📄 *${filename}:*\n\n${preview}`);
           }
@@ -392,34 +436,45 @@ export class TelegramBridge {
       return;
     }
 
-    // ── /stop — Pause active goal or stop conductor ──
+    // ── /stop — Stop conductor, goal, or both. Supports: /stop, /stop goal, /stop conductor ──
     if (text.startsWith('/stop') || text.startsWith('/pause')) {
+      const arg = text.replace(/^\/(stop|pause)\s*/, '').trim().toLowerCase();
       let stoppedSomething = false;
 
-      // Try to stop the conductor if running
+      // Check what's running
+      let conductorRunning = false;
       try {
         const runningRes = await fetch('http://localhost:3847/api/conductor/running');
         const runningData = await runningRes.json() as any;
-        if (runningData.running) {
-          await fetch('http://localhost:3847/api/conductor/stop', { method: 'POST' });
-          await this.sendMessage(chatId, `🛑 Stop signal sent to conductor. It will finish the current step and shut down.`);
-          stoppedSomething = true;
-        }
+        conductorRunning = runningData.running;
       } catch { /* silent */ }
 
-      // Also try to pause active goals
-      if (this.commandHandlers) {
-        const goals = this.commandHandlers.listGoals();
-        const active = goals.find(g => g.status === 'active');
-        if (active) {
-          await this.sendMessage(chatId, `⏸ Pausing "${active.title}"... (Goal will finish current step then stop)`);
-          this.pauseRequested = true;
-          stoppedSomething = true;
-        }
+      const activeGoal = this.commandHandlers
+        ? this.commandHandlers.listGoals().find(g => g.status === 'active')
+        : undefined;
+
+      // Stop conductor (if requested or no specific target)
+      if (conductorRunning && (arg === '' || arg === 'conductor' || arg === 'cond')) {
+        await fetch('http://localhost:3847/api/conductor/stop', { method: 'POST' });
+        await this.sendMessage(chatId, `🛑 Stop signal sent to conductor.`);
+        stoppedSomething = true;
+      }
+
+      // Pause active goal (if requested or no specific target)
+      if (activeGoal && (arg === '' || arg === 'goal' || arg === 'goals')) {
+        await this.sendMessage(chatId, `⏸ Pausing "${activeGoal.title}"...`);
+        this.pauseRequested = true;
+        stoppedSomething = true;
       }
 
       if (!stoppedSomething) {
-        await this.sendMessage(chatId, `Nothing running right now.`);
+        if (arg === 'conductor' && !conductorRunning) {
+          await this.sendMessage(chatId, `Conductor is not running.`);
+        } else if (arg === 'goal' && !activeGoal) {
+          await this.sendMessage(chatId, `No active goals to stop.`);
+        } else {
+          await this.sendMessage(chatId, `Nothing running right now.`);
+        }
       }
       return;
     }
@@ -584,6 +639,7 @@ export class TelegramBridge {
   }
 
   disconnect(): void {
+    this.polling = false;
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
       this.pollingInterval = null;

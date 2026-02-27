@@ -567,32 +567,23 @@ async function phase4_writing(): Promise<void> {
     let fullChapter = response;
     let wc = countWords(response);
 
-    // If too short, ask for continuation (threshold: 2000 words)
-    if (wc < 2000) {
-      print(`    [short] Only ${wc} words. Requesting continuation...`);
+    // If below target, request continuation(s) until we hit 3000+ words
+    const TARGET_WC = 3000;
+    let continuations = 0;
+    while (wc < TARGET_WC && continuations < 3) {
+      continuations++;
+      const remaining = TARGET_WC - wc;
+      print(`    [short] ${wc} words (need ${TARGET_WC}). Continuation ${continuations}...`);
       const cont = await chat(
         `Continue writing chapter ${ch} of ${PROJECT_NAME} from where you left off. ` +
-        `The chapter currently has ${wc} words and needs to be at least 3,000 words total. ` +
-        `Write the remaining scenes with full prose — dialogue, action, internal monologue, sensory details. ` +
-        `Do NOT summarize. Write actual narrative prose to complete this chapter.`,
+        `The chapter currently has ${wc} words and needs at least ${TARGET_WC} words total. ` +
+        `Write at least ${remaining} more words of prose — dialogue, action, internal monologue, sensory details. ` +
+        `Do NOT summarize or recap. Pick up exactly where you left off and keep writing the story.`,
         MAX_RETRIES,
         200
       );
-      fullChapter = response + '\n\n' + cont;
+      fullChapter = fullChapter + '\n\n' + cont;
       wc = countWords(fullChapter);
-
-      // If still short after first continuation, try once more
-      if (wc < 2000) {
-        print(`    [still-short] ${wc} words after continuation. Requesting more...`);
-        const cont2 = await chat(
-          `The chapter STILL only has ${wc} words. Continue writing chapter ${ch} with MORE prose. ` +
-          `Add scenes, expand dialogue, deepen the tension. I need at least ${3000 - wc} more words of narrative.`,
-          MAX_RETRIES,
-          200
-        );
-        fullChapter = fullChapter + '\n\n' + cont2;
-        wc = countWords(fullChapter);
-      }
     }
 
     await validateAndSave(
