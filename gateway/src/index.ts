@@ -178,9 +178,16 @@ class AuthorClawGateway {
     console.log(`  ✓ Skills: ${this.skills.getLoadedCount()} loaded (${this.skills.getAuthorSkillCount()} author-specific${premiumLabel})`);
 
     // ── Phase 6b: Author OS Tools ──
-    const authorOSPath = existsSync('/app/author-os')
-      ? '/app/author-os'
-      : join(process.env.HOME || process.env.USERPROFILE || '~', 'author-os');
+    // Check multiple locations: Docker mount, env var, home dir, or relative to project
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '~';
+    const authorOSCandidates = [
+      '/app/author-os',                                           // Docker
+      process.env.AUTHOR_OS_PATH || '',                           // Explicit env var
+      join(homeDir, 'author-os'),                                 // ~/author-os (VM)
+      join(ROOT_DIR, '..', 'Author OS'),                          // Sibling to AuthorClaw project
+      join(ROOT_DIR, '..', '..', 'Author OS'),                    // Automations/Author OS/
+    ].filter(Boolean);
+    const authorOSPath = authorOSCandidates.find(p => existsSync(p)) || authorOSCandidates[2];
     this.authorOS = new AuthorOSService(authorOSPath);
     await this.authorOS.initialize();
     const osTools = this.authorOS.getAvailableTools();

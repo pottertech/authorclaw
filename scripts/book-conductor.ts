@@ -803,36 +803,47 @@ async function initializeConfig(): Promise<void> {
   // Try to fetch config from dashboard API
   const config = await fetchDashboardConfig();
 
-  if (config && config.premise && typeof config.premise === 'string' && config.premise.length > 20) {
-    print('  [config] Using premise from dashboard API');
-    ACTIVE_PREMISE = config.premise;
-
-    // Try to extract project name from the premise
-    const projectMatch = ACTIVE_PREMISE.match(/PROJECT:\s*(.+)/i);
-    if (projectMatch) {
-      PROJECT_NAME = projectMatch[1].trim();
-    } else if (config.projectName) {
-      PROJECT_NAME = config.projectName;
-    }
-  } else if (config && config.projectName) {
-    PROJECT_NAME = config.projectName;
-    print(`  [config] Using project name from dashboard: ${PROJECT_NAME}`);
-  } else {
+  if (!config || Object.keys(config).length === 0) {
     print('  [config] No dashboard config found, using SEED_PREMISE defaults');
-    // Extract project name from SEED_PREMISE
     const projectMatch = SEED_PREMISE.match(/PROJECT:\s*(.+)/i);
-    if (projectMatch) {
-      PROJECT_NAME = projectMatch[1].trim();
-    }
+    if (projectMatch) PROJECT_NAME = projectMatch[1].trim();
+  } else if (config.premise && typeof config.premise === 'string' && config.premise.length > 20) {
+    // Legacy: single premise string field
+    print('  [config] Using premise string from dashboard');
+    ACTIVE_PREMISE = config.premise;
+    const projectMatch = ACTIVE_PREMISE.match(/PROJECT:\s*(.+)/i);
+    if (projectMatch) PROJECT_NAME = projectMatch[1].trim();
+    else if (config.projectName || config.name) PROJECT_NAME = config.projectName || config.name;
+  } else if (config.name || config.logline) {
+    // Dashboard structured fields: build premise from individual config values
+    PROJECT_NAME = config.name || config.projectName || PROJECT_NAME;
+    print(`  [config] Building premise from dashboard fields for "${PROJECT_NAME}"`);
+    const parts: string[] = [];
+    parts.push(`PROJECT: ${PROJECT_NAME}`);
+    if (config.genre) parts.push(`GENRE: ${config.genre}`);
+    if (config.logline) parts.push(`LOGLINE: ${config.logline}`);
+    if (config.setting) parts.push(`SETTING: ${config.setting}`);
+    if (config.tone) parts.push(`TONE: ${config.tone}`);
+    if (config.pov && config.tense) parts.push(`POV: ${config.pov}, ${config.tense} tense`);
+    else if (config.pov) parts.push(`POV: ${config.pov}`);
+    if (config.themes) parts.push(`THEMES: ${config.themes}`);
+    if (config.characterSeed) parts.push(`PROTAGONIST: ${config.characterSeed}`);
+    ACTIVE_PREMISE = parts.join('\n');
+    print(`  [config] Premise built (${ACTIVE_PREMISE.length} chars)`);
+  } else if (config.projectName || config.name) {
+    PROJECT_NAME = config.projectName || config.name;
+    print(`  [config] Using project name from dashboard: ${PROJECT_NAME}`);
   }
 
-  // Read chapter count and word count targets from config
-  if (config && config.totalChapters && Number(config.totalChapters) >= 1 && Number(config.totalChapters) <= 100) {
-    TOTAL_CHAPTERS = Number(config.totalChapters);
+  // Read chapter count — support both dashboard field names and legacy names
+  const chapters = Number(config?.targetChapters || config?.totalChapters || 0);
+  if (chapters >= 1 && chapters <= 200) {
+    TOTAL_CHAPTERS = chapters;
     print(`  [config] Chapters: ${TOTAL_CHAPTERS}`);
   }
-  if (config && config.targetChapterWordCount && Number(config.targetChapterWordCount) >= 500) {
-    TARGET_CHAPTER_WC = Number(config.targetChapterWordCount);
+  const wpc = Number(config?.targetWordsPerChapter || config?.targetChapterWordCount || 0);
+  if (wpc >= 100) {
+    TARGET_CHAPTER_WC = wpc;
     print(`  [config] Target words/chapter: ${TARGET_CHAPTER_WC.toLocaleString()}`);
   }
   ESTIMATED_TOTAL_WC = TOTAL_CHAPTERS * TARGET_CHAPTER_WC;

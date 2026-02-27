@@ -9,7 +9,7 @@ services:
     container_name: authorclaw
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3847:3847"  # Localhost only
+      - "3847:3847"  # All interfaces (needed for VirtualBox NAT port forwarding)
     volumes:
       # Persist workspace data
       - authorclaw-workspace:/app/workspace

@@ -238,9 +238,16 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     const { existsSync: ex } = await import('fs');
     const { join: j } = await import('path');
 
-    const sharedFolder = '/media/sf_authorclaw-transfer';
-    if (!ex(sharedFolder)) {
-      return res.status(404).json({ error: 'Shared folder not found at ' + sharedFolder });
+    // Check common shared folder locations (VM, Docker, or user-set env var)
+    const candidates = [
+      process.env.AUTHORCLAW_KEYS_DIR,
+      '/media/sf_authorclaw-transfer',
+      '/media/sf_vm-transfer',
+      j(baseDir, '..', 'vm-transfer'),
+    ].filter(Boolean) as string[];
+    const sharedFolder = candidates.find(p => ex(p));
+    if (!sharedFolder) {
+      return res.status(404).json({ error: 'No key folder found. Add API keys manually in Settings above.' });
     }
 
     const keyFiles: Record<string, string> = {
@@ -1076,6 +1083,12 @@ ${sourceCode.substring(0, 15000)}
       return res.status(409).json({ error: 'Conductor is already running' });
     }
 
+    // Pre-flight: verify at least one AI provider is active
+    const providers = services.aiRouter.getActiveProviders();
+    if (!providers || providers.length === 0) {
+      return res.status(400).json({ error: 'No AI providers active. Add an API key in Settings first.' });
+    }
+
     const { join: j } = await import('path');
     const { existsSync: ex } = await import('fs');
     const { mkdir: mkd, writeFile: wf, readFile: rf } = await import('fs/promises');
@@ -1085,19 +1098,23 @@ ${sourceCode.substring(0, 15000)}
       return res.status(404).json({ error: 'Conductor script not found at ' + scriptPath });
     }
 
-    // Save chapter/word count config if provided in the launch request
-    const { totalChapters, targetChapterWordCount, premise, projectName } = req.body || {};
-    if (totalChapters || targetChapterWordCount || premise || projectName) {
+    // Save config from launch request body (dashboard sends current form fields)
+    const reqBody = req.body || {};
+    const { totalChapters, targetChapterWordCount, premise, projectName, ...extraFields } = reqBody;
+    const hasConfig = totalChapters || targetChapterWordCount || premise || projectName || Object.keys(extraFields).length > 0;
+    if (hasConfig) {
       const configDir = j(baseDir, 'workspace', '.config');
       await mkd(configDir, { recursive: true });
       const configPath = j(configDir, 'project.json');
       let existing: any = {};
       try { existing = JSON.parse(await rf(configPath, 'utf-8')); } catch { /* new config */ }
-      if (totalChapters) existing.totalChapters = Number(totalChapters);
-      if (targetChapterWordCount) existing.targetChapterWordCount = Number(targetChapterWordCount);
-      if (premise) existing.premise = premise;
-      if (projectName) existing.projectName = projectName;
-      await wf(configPath, JSON.stringify(existing, null, 2));
+      // Merge ALL fields from dashboard form into config
+      const merged = { ...existing, ...extraFields };
+      if (totalChapters) merged.totalChapters = Number(totalChapters);
+      if (targetChapterWordCount) merged.targetChapterWordCount = Number(targetChapterWordCount);
+      if (premise) merged.premise = premise;
+      if (projectName) merged.projectName = projectName;
+      await wf(configPath, JSON.stringify(merged, null, 2));
     }
 
     // Reset state
