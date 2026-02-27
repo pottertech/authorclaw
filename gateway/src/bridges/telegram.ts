@@ -110,6 +110,7 @@ export class TelegramBridge {
         `/research [topic] — Research from whitelisted sites\n` +
         `/files [folder] — List project files\n` +
         `/read [filename] — Read a file snippet\n` +
+        `/speak [text] — Read text aloud (TTS voice message)\n` +
         `/stop — Pause active goal / stop conductor\n\n` +
         `Or just chat with me.`);
       return;
@@ -214,25 +215,47 @@ export class TelegramBridge {
       return;
     }
 
-    // ── /status — Quick status ──
+    // ── /status — Quick status (includes conductor + goals) ──
     if (text.startsWith('/status')) {
+      let summary = '';
+
+      // Check conductor status
+      try {
+        const condRes = await fetch('http://localhost:3847/api/conductor/status');
+        const cond = await condRes.json() as any;
+        if (cond.phase && cond.phase !== 'idle') {
+          summary += `🎼 *Conductor:* ${cond.phase}\n`;
+          if (cond.step) summary += `   ${cond.step}\n`;
+          if (cond.progress) {
+            const p = cond.progress;
+            if (p.chaptersComplete > 0) {
+              summary += `   📖 ${p.chaptersComplete}/${p.totalChapters || 25} chapters`;
+              if (p.wordCount) summary += ` (${Number(p.wordCount).toLocaleString()} words)`;
+              summary += '\n';
+            }
+            if (p.elapsedMs) {
+              summary += `   ⏱ ${Math.round(p.elapsedMs / 60000)} min elapsed\n`;
+            }
+          }
+        }
+      } catch { /* conductor endpoint unavailable */ }
+
+      // Check goal engine status
       if (this.commandHandlers) {
         const goals = this.commandHandlers.listGoals();
         const active = goals.filter(g => g.status === 'active');
         const completed = goals.filter(g => g.status === 'completed');
-        let summary = '';
 
         if (active.length > 0) {
-          summary += `🔄 ${active.length} goal(s) running:\n` + active.map(g => `• ${g.title} (${g.progress})`).join('\n');
+          summary += `🔄 ${active.length} goal(s) running:\n` + active.map(g => `  • ${g.title} (${g.progress})`).join('\n') + '\n';
         }
         if (completed.length > 0) {
-          summary += `${summary ? '\n' : ''}✅ ${completed.length} goal(s) done`;
+          summary += `✅ ${completed.length} goal(s) done\n`;
         }
-        if (!summary) summary = 'Nothing running. Use /goal to start something.';
-        await this.sendMessage(chatId, summary + `\n\n📊 Dashboard: http://localhost:3847`);
-      } else {
-        await this.sendMessage(chatId, `📊 Dashboard: http://localhost:3847`);
       }
+
+      if (!summary) summary = 'Nothing running. Use /goal or /conductor to start.\n';
+      await this.sendMessage(chatId, summary + `\n📊 Dashboard: http://localhost:3847`);
       return;
     }
 
@@ -302,6 +325,73 @@ export class TelegramBridge {
       return;
     }
 
+    // ── /speak — Text-to-speech via Piper (sends Telegram voice message) ──
+    if (text.startsWith('/speak') || text.startsWith('/tts')) {
+      const input = text.replace(/^\/(speak|tts)\s*/, '').trim();
+      if (!input) {
+        await this.sendMessage(chatId, `🔊 What should I read aloud?\n\n/speak The detective stepped into the library...\n/speak chapter 3 — reads chapter 3 aloud`);
+        return;
+      }
+
+      try {
+        // Check if TTS is available
+        const statusRes = await fetch('http://localhost:3847/api/status');
+        const status = await statusRes.json() as any;
+        if (!status.tts?.available) {
+          await this.sendMessage(chatId, `🔇 TTS not available yet. Install Piper TTS on the server:\n\`pip3 install piper-tts\``);
+          return;
+        }
+
+        // Check if user wants to read a file (e.g., "/speak chapter 3")
+        let textToSpeak = input;
+        const chapterMatch = input.match(/^chapter\s+(\d+)/i);
+        if (chapterMatch && this.commandHandlers) {
+          const chapterNum = chapterMatch[1];
+          // Try common chapter file patterns
+          const patterns = [
+            `chapters/chapter-${chapterNum}.md`,
+            `chapters/chapter-${chapterNum.padStart(2, '0')}.md`,
+            `chapters/ch${chapterNum}.md`,
+          ];
+          let found = false;
+          for (const pattern of patterns) {
+            try {
+              const result = await this.commandHandlers.readFile(pattern);
+              if (!result.error) {
+                textToSpeak = result.content.substring(0, 5000); // Limit for TTS
+                found = true;
+                break;
+              }
+            } catch { /* try next pattern */ }
+          }
+          if (!found) {
+            await this.sendMessage(chatId, `📄 Couldn't find chapter ${chapterNum}. Use /files to see available files.`);
+            return;
+          }
+        }
+
+        await this.sendMessage(chatId, `🔊 Generating audio...`);
+
+        // Call TTS API
+        const ttsRes = await fetch('http://localhost:3847/api/audio/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: textToSpeak, format: 'ogg' }),
+        });
+        const ttsData = await ttsRes.json() as any;
+
+        if (ttsData.success && ttsData.file) {
+          // Send as Telegram voice message
+          await this.sendVoiceMessage(chatId, ttsData.file, textToSpeak.substring(0, 100));
+        } else {
+          await this.sendMessage(chatId, `❌ ${ttsData.error || 'TTS generation failed'}`);
+        }
+      } catch (e) {
+        await this.sendMessage(chatId, `❌ TTS error: ${String(e)}`);
+      }
+      return;
+    }
+
     // ── /stop — Pause active goal or stop conductor ──
     if (text.startsWith('/stop') || text.startsWith('/pause')) {
       let stoppedSomething = false;
@@ -362,7 +452,16 @@ export class TelegramBridge {
       await this.messageHandler(
         text,
         `telegram:${chatId}`,
-        async (response) => { await this.sendMessage(chatId, response); }
+        async (response) => {
+          // Hard cap for regular Telegram messages (2000 chars) — prevents chapter dumps
+          const MAX_TELEGRAM_RESPONSE = 2000;
+          if (response.length > MAX_TELEGRAM_RESPONSE) {
+            const truncated = response.substring(0, MAX_TELEGRAM_RESPONSE).replace(/\s+\S*$/, '');
+            await this.sendMessage(chatId, truncated + '\n\n✂️ _Truncated. See full response in the dashboard._');
+          } else {
+            await this.sendMessage(chatId, response);
+          }
+        }
       );
     }
   }
@@ -412,6 +511,57 @@ export class TelegramBridge {
       remaining = remaining.substring(splitAt);
     }
     return chunks;
+  }
+
+  /**
+   * Send a voice message (audio file) to a Telegram chat.
+   * Used by /speak and /tts commands for text-to-speech output.
+   */
+  async sendVoiceMessage(chatId: number, filePath: string, caption?: string): Promise<void> {
+    try {
+      const { readFile } = await import('fs/promises');
+      const audioBuffer = await readFile(filePath);
+      const filename = filePath.endsWith('.ogg') ? 'voice.ogg' : 'voice.wav';
+
+      // Build multipart form data manually for Telegram sendVoice API
+      const boundary = '----TelegramVoice' + Date.now();
+      const parts: Buffer[] = [];
+
+      // Chat ID part
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`));
+
+      // Caption part (optional)
+      if (caption) {
+        const shortCaption = caption.length > 200 ? caption.substring(0, 200) + '...' : caption;
+        parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n🔊 ${shortCaption}\r\n`));
+      }
+
+      // Voice file part
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="voice"; filename="${filename}"\r\nContent-Type: ${filename.endsWith('.ogg') ? 'audio/ogg' : 'audio/wav'}\r\n\r\n`));
+      parts.push(audioBuffer);
+      parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+      const body = Buffer.concat(parts);
+
+      const response = await fetch(`https://api.telegram.org/bot${this.token}/sendVoice`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': String(body.length),
+        },
+        body,
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error('Telegram sendVoice failed:', errText);
+        // Fall back to sending as document if voice fails
+        await this.sendMessage(chatId, `🔊 Audio generated but couldn't send as voice message. File saved at: ${filePath}`);
+      }
+    } catch (error) {
+      console.error('sendVoiceMessage error:', error);
+      await this.sendMessage(chatId, `🔊 Audio generated at: ${filePath}\n(Voice sending failed: ${String(error)})`);
+    }
   }
 
   /** Update allowed users on a live bridge (called when dashboard saves users) */

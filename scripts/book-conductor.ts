@@ -132,7 +132,7 @@ async function chat(message: string, retries = MAX_RETRIES, minLength = MIN_CONT
       const res = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, skipHistory: true }),
         signal: controller.signal,
       });
       clearTimeout(timer);

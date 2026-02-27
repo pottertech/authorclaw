@@ -19,6 +19,10 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
   let conductorStopRequested = false;
   let conductorProcess: ChildProcess | null = null;
 
+  // Tracking for Telegram notifications (avoid spamming — only notify on milestones)
+  let previousConductorPhase = 'idle';
+  let previousChaptersComplete = 0;
+
   // ── Health Check ──
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({
@@ -55,12 +59,15 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       autonomous: services.heartbeat.getAutonomousStatus(),
       permissions: services.permissions.preset,
       cache: services.aiRouter.getCacheStats(),
+      tts: {
+        available: services.tts?.isAvailable() || false,
+      },
     });
   });
 
   // ── Chat API (for integrations) ──
   app.post('/api/chat', async (req: Request, res: Response) => {
-    const { message } = req.body;
+    const { message, skipHistory } = req.body;
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message required' });
     }
@@ -68,8 +75,10 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       return res.status(400).json({ error: 'Message too long (max 10,000 chars)' });
     }
 
+    // Use 'conductor' channel when skipHistory is set (prevents chapter dumps in Telegram)
+    const channel = skipHistory ? 'conductor' : 'api';
     let response = '';
-    await gateway.handleMessage(message, 'api', (text: string) => {
+    await gateway.handleMessage(message, channel, (text: string) => {
       response = text;
     });
 
@@ -813,7 +822,43 @@ ${sourceCode.substring(0, 15000)}
 
   // Conductor posts its status here (called by scripts/book-conductor.ts)
   app.post('/api/conductor/status', (req: Request, res: Response) => {
-    conductorState = req.body;
+    const newState = req.body;
+    const newPhase = newState.phase || '';
+    const newChapters = newState.progress?.chaptersComplete || 0;
+
+    // Detect meaningful milestones for Telegram notification
+    let notification = '';
+
+    if (newPhase !== previousConductorPhase && newPhase !== 'idle') {
+      // Phase transition
+      if (newPhase.startsWith('Complete')) {
+        const wc = newState.progress?.wordCount || 0;
+        const elapsed = newState.progress?.elapsedMs
+          ? Math.round(newState.progress.elapsedMs / 60000)
+          : '?';
+        notification = `🎉 Conductor finished!\n${wc.toLocaleString()} words in ${elapsed} minutes`;
+      } else if (newPhase.startsWith('Error') || newPhase === 'Stopped') {
+        notification = `⚠️ Conductor ${newPhase.toLowerCase()}: ${newState.step || ''}`;
+      } else {
+        notification = `🎼 ${newPhase}\n${newState.step || ''}`;
+      }
+    } else if (newChapters > previousChaptersComplete && newChapters > 0) {
+      // Chapter completion
+      const total = newState.progress?.totalChapters || 25;
+      const wc = newState.progress?.wordCount || 0;
+      notification = `📖 Chapter ${newChapters}/${total} done (${wc.toLocaleString()} words total)`;
+    }
+
+    // Update tracking state
+    previousConductorPhase = newPhase;
+    previousChaptersComplete = newChapters;
+    conductorState = newState;
+
+    // Broadcast to Telegram if we have a notification
+    if (notification && gateway.isTelegramConnected?.()) {
+      gateway.broadcastTelegram?.(notification);
+    }
+
     res.json({ ok: true, stopRequested: conductorStopRequested });
   });
 
@@ -922,5 +967,66 @@ ${sourceCode.substring(0, 15000)}
       } catch { /* fall through */ }
     }
     res.json({});
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // TTS / Audio (Piper text-to-speech)
+  // ═══════════════════════════════════════════════════════════
+
+  // Generate audio from text
+  app.post('/api/audio/generate', async (req: Request, res: Response) => {
+    const { text, voice, format } = req.body;
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'Text required' });
+    }
+    if (text.length > 10000) {
+      return res.status(400).json({ error: 'Text too long (max 10,000 chars)' });
+    }
+
+    if (!services.tts?.isAvailable()) {
+      return res.status(503).json({
+        error: 'TTS not available. Install Piper TTS: pip3 install piper-tts',
+        install: 'pip3 install piper-tts',
+      });
+    }
+
+    const result = await services.tts.generate(text, { voice, format: format || 'wav' });
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(500).json(result);
+    }
+  });
+
+  // Serve generated audio files
+  app.get('/api/audio/file/:filename', async (req: Request, res: Response) => {
+    const { join: j } = await import('path');
+    const { existsSync: ex } = await import('fs');
+    const fname = String(req.params.filename);
+    const filePath = j(baseDir, 'workspace', 'audio', fname);
+
+    // Security: prevent path traversal
+    if (fname.includes('..') || fname.includes('/')) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    if (!ex(filePath)) {
+      return res.status(404).json({ error: 'Audio file not found' });
+    }
+
+    const ext = fname.split('.').pop()?.toLowerCase();
+    const contentType = ext === 'ogg' ? 'audio/ogg' : 'audio/wav';
+    res.setHeader('Content-Type', contentType);
+    const { createReadStream } = await import('fs');
+    createReadStream(filePath).pipe(res);
+  });
+
+  // List available voices
+  app.get('/api/audio/voices', async (_req: Request, res: Response) => {
+    if (!services.tts?.isAvailable()) {
+      return res.json({ available: false, voices: [], install: 'pip3 install piper-tts' });
+    }
+    const voices = await services.tts.listVoices();
+    res.json({ available: true, voices });
   });
 }

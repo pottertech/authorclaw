@@ -34,6 +34,7 @@ import { SandboxGuard } from './security/sandbox.js';
 import { InjectionDetector } from './security/injection.js';
 import { SkillLoader } from './skills/loader.js';
 import { AuthorOSService } from './services/author-os.js';
+import { TTSService } from './services/tts.js';
 import { GoalEngine } from './services/goals.js';
 import { TelegramBridge } from './bridges/telegram.js';
 import { DiscordBridge } from './bridges/discord.js';
@@ -74,6 +75,7 @@ class AuthorClawGateway {
   // Skills, goals & bridges
   private skills!: SkillLoader;
   private authorOS!: AuthorOSService;
+  private tts!: TTSService;
   private goalEngine!: GoalEngine;
   private telegram?: TelegramBridge;
   private discord?: DiscordBridge;
@@ -188,7 +190,11 @@ class AuthorClawGateway {
       console.log('  ⚠ Author OS: no tools found (mount to /app/author-os or ~/author-os)');
     }
 
-    // ── Phase 6c: Goal Engine ──
+    // ── Phase 6c: TTS Service (Piper) ──
+    this.tts = new TTSService(join(ROOT_DIR, 'workspace'));
+    await this.tts.initialize();
+
+    // ── Phase 6d: Goal Engine ──
     this.goalEngine = new GoalEngine(this.authorOS);
     // Wire AI capabilities for dynamic planning
     this.goalEngine.setAI(
@@ -390,16 +396,19 @@ class AuthorClawGateway {
       systemPrompt += '\n' + extraContext;
     }
 
-    // ── Add to conversation history ──
-    this.conversationHistory.push({
-      role: 'user',
-      content,
-      timestamp: new Date(),
-    });
+    // ── Add to conversation history (skip for conductor to prevent chapter dumps in Telegram) ──
+    const skipHistory = channel === 'conductor' || channel === 'api-silent';
+    if (!skipHistory) {
+      this.conversationHistory.push({
+        role: 'user',
+        content,
+        timestamp: new Date(),
+      });
 
-    const maxHistory = this.config.get('ai.maxHistoryMessages', 20);
-    if (this.conversationHistory.length > maxHistory * 2) {
-      this.conversationHistory = this.conversationHistory.slice(-maxHistory * 2);
+      const maxHistory = this.config.get('ai.maxHistoryMessages', 20);
+      if (this.conversationHistory.length > maxHistory * 2) {
+        this.conversationHistory = this.conversationHistory.slice(-maxHistory * 2);
+      }
     }
 
     // ── Call AI ──
@@ -413,11 +422,13 @@ class AuthorClawGateway {
         })),
       });
 
-      this.conversationHistory.push({
-        role: 'assistant',
-        content: response.text,
-        timestamp: new Date(),
-      });
+      if (!skipHistory) {
+        this.conversationHistory.push({
+          role: 'assistant',
+          content: response.text,
+          timestamp: new Date(),
+        });
+      }
 
       await this.memory.process(content, response.text);
       this.costs.record(provider.id, response.tokensUsed);
@@ -469,11 +480,13 @@ class AuthorClawGateway {
               content: m.content,
             })),
           });
-          this.conversationHistory.push({
-            role: 'assistant',
-            content: response.text,
-            timestamp: new Date(),
-          });
+          if (!skipHistory) {
+            this.conversationHistory.push({
+              role: 'assistant',
+              content: response.text,
+              timestamp: new Date(),
+            });
+          }
           respond(response.text);
         } catch {
           respond('I\'m having trouble connecting to my AI providers right now. Please try again in a moment.');
@@ -672,6 +685,7 @@ class AuthorClawGateway {
       sandbox: this.sandbox,
       skills: this.skills,
       authorOS: this.authorOS,
+      tts: this.tts,
     };
   }
 
@@ -685,6 +699,16 @@ class AuthorClawGateway {
 
   isTelegramConnected(): boolean {
     return this.telegram !== undefined;
+  }
+
+  /**
+   * Broadcast a message to all Telegram users.
+   * Used by routes for conductor status updates.
+   */
+  broadcastTelegram(message: string): void {
+    if (this.telegram) {
+      this.telegram.broadcastToAllowed(message);
+    }
   }
 
   async connectTelegram(): Promise<{ error?: string }> {
