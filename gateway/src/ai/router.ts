@@ -54,7 +54,7 @@ const TASK_TIERS: Record<string, TaskTier> = {
   marketing:        'free',      // Blurbs, pitches
   outline:          'mid',       // Story structure
   book_bible:       'mid',       // World building
-  consistency:      'premium',   // Cross-chapter analysis needs best reasoning
+  consistency:      'mid',       // Consistency checks — same tier as book_bible
   final_edit:       'premium',   // Final polish needs best reasoning
 };
 

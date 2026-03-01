@@ -1043,6 +1043,21 @@ class AuthorClawGateway {
               (activeStep as any).taskType || undefined
             ).catch(reject);
           });
+
+          // Retry once with 'general' routing if response is too short
+          if (!aiResponse || aiResponse.length < 50) {
+            console.log(`  ↻ Step "${activeStep.label}" got short response — retrying with general routing...`);
+            aiResponse = '';
+            await new Promise<void>((resolve, reject) => {
+              gateway.handleMessage(
+                stepUserMessage,
+                'goal-engine',
+                (response) => { aiResponse = response; resolve(); },
+                projectContext,
+                'general'
+              ).catch(reject);
+            });
+          }
         } catch (err) {
           gateway.projectEngine.failStep(projectId, activeStep.id, String(err));
           gateway.activityLog.log({

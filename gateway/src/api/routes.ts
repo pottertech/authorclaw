@@ -635,6 +635,19 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
         activeStep.taskType || undefined  // Use step's own taskType for routing
       );
 
+      // Retry once with 'general' routing if the response is too short
+      if (!response || response.length < 50) {
+        console.log(`  ↻ Step "${activeStep.label}" got short response — retrying with general routing...`);
+        response = '';
+        await gateway.handleMessage(
+          userMessage,
+          'projects',
+          (text: string) => { response = text; },
+          projectContext,
+          'general'
+        );
+      }
+
       if (!response || response.length < 50) {
         engine.failStep(project.id, activeStep.id, 'Empty or too-short response from AI');
         return res.json({
@@ -708,6 +721,20 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
           projectContext,
           activeStep.taskType || undefined  // Use step's own taskType for routing
         );
+
+        // Retry once with 'general' routing if the response is too short
+        // This catches cases where a premium/mid provider fails but free providers work fine
+        if (!response || response.length < 50) {
+          console.log(`  ↻ Step "${activeStep.label}" got short response — retrying with general routing...`);
+          response = '';
+          await gateway.handleMessage(
+            userMessage,
+            'project-engine',
+            (text: string) => { response = text; },
+            projectContext,
+            'general'  // Force free-tier routing (Gemini first)
+          );
+        }
 
         if (!response || response.length < 50) {
           engine.failStep(currentProject.id, activeStep.id, 'Empty or too-short response from AI');
