@@ -1623,6 +1623,7 @@ function continueProjectToPhase(sourceProject, targetType) {
     description: contextDesc.substring(0, 30000),
     type: targetType,
     personaId: sourceProject.personaId || (sourceProject.persona && typeof sourceProject.persona === 'object' ? sourceProject.persona.id : undefined),
+    preferredProvider: sourceProject.preferredProvider || undefined,
   };
 
   showToast('Creating ' + targetType + ' project...', 'info');
@@ -1707,9 +1708,9 @@ function openProjectDetail(id) {
     if (nextPhases.length > 0) {
       actionsHtml += '<div style="display:inline-block;position:relative;">' +
         '<button class="success" id="pdContinue">Continue to &rarr;</button>' +
-        '<div id="pdContinueMenu" class="continue-menu" style="display:none;position:absolute;bottom:100%;left:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 0;min-width:220px;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,0.3);">';
+        '<div id="pdContinueMenu" style="display:none;position:absolute;top:calc(100% + 4px);left:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 0;min-width:240px;z-index:1000;box-shadow:0 4px 16px rgba(0,0,0,0.4);">';
       nextPhases.forEach(function(phase) {
-        actionsHtml += '<div class="continue-option" data-type="' + esc(phase.type) + '" style="padding:8px 16px;cursor:pointer;font-size:13px;">' +
+        actionsHtml += '<div class="continue-option" data-type="' + esc(phase.type) + '" style="padding:10px 16px;cursor:pointer;font-size:13px;transition:background 0.15s;">' +
           '<strong>' + esc(phase.label) + '</strong><br>' +
           '<span style="font-size:11px;color:var(--muted);">' + esc(phase.desc) + '</span>' +
         '</div>';
@@ -1769,7 +1770,20 @@ function openProjectDetail(id) {
     pdContinue.addEventListener('click', function(e) {
       e.stopPropagation();
       var menu = detail.querySelector('#pdContinueMenu');
-      menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+      var isVisible = menu.style.display !== 'none';
+      menu.style.display = isVisible ? 'none' : 'block';
+      // Add outside-click listener each time menu opens
+      if (!isVisible) {
+        setTimeout(function() {
+          var closeHandler = function(evt) {
+            if (!menu.contains(evt.target) && evt.target !== pdContinue) {
+              menu.style.display = 'none';
+              document.removeEventListener('click', closeHandler);
+            }
+          };
+          document.addEventListener('click', closeHandler);
+        }, 10);
+      }
     });
     detail.querySelectorAll('.continue-option').forEach(function(opt) {
       opt.addEventListener('mouseenter', function() { opt.style.background = 'var(--hover)'; });
@@ -1779,12 +1793,6 @@ function openProjectDetail(id) {
         detail.querySelector('#pdContinueMenu').style.display = 'none';
         continueProjectToPhase(project, opt.getAttribute('data-type'));
       });
-    });
-    // Close menu on outside click
-    document.addEventListener('click', function closeMenu() {
-      var menu = detail.querySelector('#pdContinueMenu');
-      if (menu) menu.style.display = 'none';
-      document.removeEventListener('click', closeMenu);
     });
   }
 
