@@ -499,24 +499,30 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     if (!engine) {
       return res.status(503).json({ error: 'Project engine not initialized' });
     }
-    const { type, title, description, context, planning, config, personaId } = req.body;
+    const { type, title, description, context, planning, config, personaId, preferredProvider } = req.body;
     if (!title || !description) {
       return res.status(400).json({ error: 'title and description required' });
     }
+
+    // Helper to set optional fields on newly created projects
+    const applyProjectOptions = (project: any) => {
+      if (personaId) project.personaId = personaId;
+      if (preferredProvider) project.preferredProvider = preferredProvider;
+    };
 
     // Novel pipeline: use dedicated pipeline builder
     // Trust the explicitly-sent type; only infer from description if no type provided
     const inferredType = type || engine.inferProjectType(description);
     if (inferredType === 'novel-pipeline') {
       const project = engine.createNovelPipeline(title, description, config || context);
-      if (personaId) project.personaId = personaId;
+      applyProjectOptions(project);
       return res.json({ project, planning: 'novel-pipeline' });
     }
 
     // Book Production: uses dynamic chapter generation
     if (inferredType === 'book-production') {
       const project = engine.createBookProduction(title, description, config || context || {});
-      if (personaId) project.personaId = personaId;
+      applyProjectOptions(project);
       return res.json({ project, planning: 'book-production' });
     }
 
@@ -525,14 +531,14 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       const skillCatalog = services.skills.getSkillCatalog();
       const authorOSTools = services.authorOS?.getAvailableTools() || [];
       const project = await engine.planProject(title, description, skillCatalog, authorOSTools, context);
-      if (personaId) project.personaId = personaId;
+      applyProjectOptions(project);
       return res.json({ project, planning: 'dynamic' });
     }
 
     // Template-based fallback
     const projectType = inferredType;
     const project = engine.createProject(projectType, title, description, context);
-    if (personaId) project.personaId = personaId;
+    applyProjectOptions(project);
     res.json({ project, planning: 'template' });
   });
 
@@ -2266,6 +2272,77 @@ ${sourceCode.substring(0, 15000)}
     } catch (error) {
       res.status(500).json({ error: 'Research failed: ' + String(error) });
     }
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // Image Generation (Together AI + OpenAI)
+  // ═══════════════════════════════════════════════════════════
+
+  // Generate an image from a text prompt
+  app.post('/api/images/generate', async (req: Request, res: Response) => {
+    const imageGen = gateway.getImageGen?.();
+    if (!imageGen) return res.status(503).json({ error: 'Image generation service not initialized' });
+
+    const { prompt, provider, width, height, style } = req.body;
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'prompt is required' });
+    }
+
+    try {
+      const result = await imageGen.generate(prompt, { provider, width, height, style });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: 'Image generation failed: ' + String(err) });
+    }
+  });
+
+  // Generate a book cover
+  app.post('/api/images/book-cover', async (req: Request, res: Response) => {
+    const imageGen = gateway.getImageGen?.();
+    if (!imageGen) return res.status(503).json({ error: 'Image generation service not initialized' });
+
+    const { title, author, genre, description, style } = req.body;
+    if (!description) {
+      return res.status(400).json({ error: 'description is required' });
+    }
+
+    try {
+      const result = await imageGen.generateBookCover({
+        title: title || 'Untitled',
+        author: author || 'AuthorClaw',
+        genre: genre || 'fiction',
+        description,
+        style,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: 'Book cover generation failed: ' + String(err) });
+    }
+  });
+
+  // Check available image providers
+  app.get('/api/images/providers', async (_req: Request, res: Response) => {
+    const imageGen = gateway.getImageGen?.();
+    if (!imageGen) return res.status(503).json({ error: 'Image generation service not initialized' });
+    const providers = await imageGen.getAvailableProviders();
+    res.json({ providers });
+  });
+
+  // Serve generated images
+  app.get('/api/images/:filename', async (req: Request, res: Response) => {
+    const imageGen = gateway.getImageGen?.();
+    if (!imageGen) return res.status(503).json({ error: 'Image generation service not initialized' });
+
+    const { join: j } = await import('path');
+    const { existsSync: ex } = await import('fs');
+    const fname = String(req.params.filename);
+    const filePath = j(imageGen.getImageDir(), fname);
+
+    if (!ex(filePath) || !fname.match(/^cover-[a-f0-9]+\.png$/)) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+
+    res.sendFile(filePath);
   });
 
   // ═══════════════════════════════════════════════════════════

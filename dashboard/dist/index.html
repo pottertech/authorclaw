@@ -1323,6 +1323,18 @@ function openCreateProjectModal(template, serverTemplate) {
         '<label>Persona</label>' +
         '<select id="modalPersona">' + personaOpts + '</select>' +
       '</div>' +
+      '<div class="form-group">' +
+        '<label>AI Model</label>' +
+        '<select id="modalProvider">' +
+          '<option value="">Auto — smart tiered routing (recommended)</option>' +
+          '<option value="gemini">Gemini (free tier)</option>' +
+          '<option value="deepseek">DeepSeek (cheap tier)</option>' +
+          '<option value="claude">Claude (premium tier)</option>' +
+          '<option value="openai">OpenAI GPT (premium tier)</option>' +
+          '<option value="ollama">Ollama (local, free)</option>' +
+        '</select>' +
+        '<div style="font-size:11px;color:var(--muted);margin-top:4px;">Auto uses free models for research/marketing, mid-tier for writing, premium for final edits. Override to force one model for all steps.</div>' +
+      '</div>' +
       extraFields +
       '<div class="modal-actions">' +
         '<button class="secondary" id="modalCancel">Cancel</button>' +
@@ -1338,6 +1350,7 @@ function openCreateProjectModal(template, serverTemplate) {
     var title = document.getElementById('modalTitle').value.trim();
     var desc = document.getElementById('modalDesc').value.trim();
     var persona = document.getElementById('modalPersona').value;
+    var provider = document.getElementById('modalProvider').value;
     if (!desc && !title) { showToast('Please enter a title or description', 'error'); return; }
 
     var body = {
@@ -1345,7 +1358,8 @@ function openCreateProjectModal(template, serverTemplate) {
       description: desc || title,
       type: isCustom ? undefined : template.type,
       planning: isCustom ? 'dynamic' : undefined,
-      personaId: persona || undefined
+      personaId: persona || undefined,
+      preferredProvider: provider || undefined
     };
 
     if (isProduction || isPipeline) {
@@ -1715,6 +1729,7 @@ function openProjectDetail(id) {
           '<div style="display:flex;gap:6px;">' +
             '<span class="badge badge-type">' + esc(project.type || 'general') + '</span>' +
             (personaName ? '<span class="badge badge-persona">' + esc(personaName) + '</span>' : '') +
+            (project.preferredProvider ? '<span class="badge" style="background:var(--accent);color:#fff;">' + esc(project.preferredProvider) + '</span>' : '') +
             '<span class="badge badge-status badge-' + esc(project.status) + '">' + esc(project.status) + '</span>' +
           '</div>' +
         '</div>' +
@@ -1796,19 +1811,26 @@ function loadProjectFiles(id) {
     el.innerHTML = '';
     data.files.forEach(function(f) {
       var isMd = f.type === 'md' || (f.name && f.name.endsWith('.md'));
-      var iconSvg = isMd
-        ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>'
-        : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+      var isImage = f.name && (f.name.endsWith('.png') || f.name.endsWith('.jpg') || f.name.endsWith('.jpeg'));
+      var iconSvg = isImage
+        ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>'
+        : isMd
+          ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>'
+          : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
       var row = document.createElement('div');
       row.className = 'file-row';
       var docxBtn = isMd
         ? '<button class="small secondary btn-export-docx" data-project="' + esc(id) + '" data-file="' + esc(f.name) + '" style="font-size:11px;padding:3px 8px;margin-right:6px;" title="Export as Word document">DOCX</button>'
+        : '';
+      var thumbHtml = isImage
+        ? '<div style="margin:6px 0;"><img src="/api/projects/' + encodeURIComponent(id) + '/download/' + encodeURIComponent(f.name) + '" style="max-width:200px;max-height:280px;border-radius:6px;border:1px solid var(--border);"></div>'
         : '';
       row.innerHTML =
         '<span class="file-icon" style="display:flex;align-items:center;color:var(--accent);">' + iconSvg + '</span>' +
         '<div class="file-info">' +
           '<div class="file-name">' + esc(f.name) + '</div>' +
           '<div class="file-size">' + formatBytes(f.size || 0) + '</div>' +
+          thumbHtml +
         '</div>' +
         '<div style="display:flex;align-items:center;">' +
           docxBtn +
@@ -2142,7 +2164,8 @@ var keyProviders = [
   { key: 'ollama_api_key', label: 'Ollama', tier: 'free' },
   { key: 'openai_api_key', label: 'OpenAI', tier: 'paid' },
   { key: 'anthropic_api_key', label: 'Claude (Anthropic)', tier: 'paid' },
-  { key: 'deepseek_api_key', label: 'DeepSeek', tier: 'cheap' }
+  { key: 'deepseek_api_key', label: 'DeepSeek', tier: 'cheap' },
+  { key: 'together_api_key', label: 'Together AI (images)', tier: 'free' }
 ];
 
 function renderKeyProviders() {

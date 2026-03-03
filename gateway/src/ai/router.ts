@@ -200,9 +200,20 @@ export class AIRouter {
   }
 
   /**
-   * Select the best provider for a given task type using tiered routing
+   * Select the best provider for a given task type using tiered routing.
+   * If preferredId is set (per-project override), use that provider directly.
    */
-  selectProvider(taskType: string): AIProvider {
+  selectProvider(taskType: string, preferredId?: string): AIProvider {
+    // Per-project provider override — use it if available
+    if (preferredId) {
+      const pref = this.providers.get(preferredId);
+      if (pref?.available) {
+        return pref;
+      }
+      // Preferred provider not available — fall through to tier routing
+      console.warn(`[router] Preferred provider '${preferredId}' not available, falling back to tier routing`);
+    }
+
     const tier = TASK_TIERS[taskType] || TASK_TIERS.general;
     const preference = TIER_ROUTING[tier];
 

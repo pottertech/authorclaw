@@ -35,6 +35,7 @@ import { InjectionDetector } from './security/injection.js';
 import { SkillLoader } from './skills/loader.js';
 import { AuthorOSService } from './services/author-os.js';
 import { TTSService } from './services/tts.js';
+import { ImageGenService } from './services/image-gen.js';
 import { ProjectEngine } from './services/projects.js';
 import { PersonaService } from './services/personas.js';
 import { TelegramBridge } from './bridges/telegram.js';
@@ -77,6 +78,7 @@ class AuthorClawGateway {
   private skills!: SkillLoader;
   private authorOS!: AuthorOSService;
   private tts!: TTSService;
+  private imageGen!: ImageGenService;
   private personas!: PersonaService;
   private projectEngine!: ProjectEngine;
   private telegram?: TelegramBridge;
@@ -235,6 +237,10 @@ class AuthorClawGateway {
     // ── Phase 6c: TTS Service (Piper) — silent init, optional feature ──
     this.tts = new TTSService(join(ROOT_DIR, 'workspace'));
     await this.tts.initialize();
+
+    // ── Phase 6c2: Image Generation Service ──
+    this.imageGen = new ImageGenService(join(ROOT_DIR, 'workspace'), this.vault);
+    await this.imageGen.initialize();
 
     // ── Phase 6d: Author Personas ──
     this.personas = new PersonaService(join(ROOT_DIR, 'workspace'));
@@ -600,7 +606,8 @@ class AuthorClawGateway {
     channel: string,
     respond: (text: string) => void,
     extraContext?: string,
-    overrideTaskType?: string
+    overrideTaskType?: string,
+    preferredProvider?: string
   ): Promise<void> {
     // ── Security Check 1: Injection Detection ──
     const injectionResult = this.injectionDetector.scan(content);
@@ -636,7 +643,7 @@ class AuthorClawGateway {
     // Project steps pass their own taskType to avoid misclassification
     // (e.g., "copy editing" in a prompt shouldn't route to premium tier)
     const taskType = overrideTaskType || this.classifyTask(content);
-    const provider = this.aiRouter.selectProvider(taskType);
+    const provider = this.aiRouter.selectProvider(taskType, preferredProvider);
 
     // ── Log skill matching to activity ──
     if (skills.length > 0) {
@@ -967,6 +974,10 @@ class AuthorClawGateway {
     return this.projectEngine;
   }
 
+  getImageGen(): ImageGenService {
+    return this.imageGen;
+  }
+
   getActivityLog(): ActivityLog {
     return this.activityLog;
   }
@@ -1031,6 +1042,9 @@ class AuthorClawGateway {
           '🔊 **Voice**',
           '`/speak [text]` — Generate voice audio',
           '`/voice [preset]` — Set TTS voice preset',
+          '',
+          '🎨 **Images**',
+          '`/cover [description]` — Generate a book cover image',
           '',
           '🧹 **Workspace**',
           '`/clean` — View workspace usage',
@@ -1243,7 +1257,7 @@ class AuthorClawGateway {
 
       case '/voice': {
         if (!this.tts) return 'TTS service not available.';
-        const presets = ['narrator_female', 'narrator_male', 'narrator_deep', 'narrator_warm', 'british_male', 'british_female', 'storyteller', 'dramatic'];
+        const presets = ['narrator_female', 'narrator_male', 'narrator_deep', 'narrator_warm', 'british_male', 'british_female', 'storyteller', 'snarky_nerd', 'curious_kid'];
         if (!args) {
           const active = this.tts.getActiveVoice();
           return `**Voice Presets:**\n\n${presets.map(p => `• \`${p}\`${active?.includes(p) ? ' ✅ (active)' : ''}`).join('\n')}\n\nUsage: \`/voice narrator_warm\` to set your default voice.`;
@@ -1288,6 +1302,29 @@ class AuthorClawGateway {
           return `**Workspace Usage:**\n\n${lines.join('\n')}\n\nTotal: ${totalFiles} files`;
         } catch {
           return 'Could not read workspace.';
+        }
+      }
+
+      case '/cover': {
+        if (!args) return '🎨 Generate a book cover image.\n\nUsage:\n`/cover [description]` — Generate a cover from a description\n\nExample:\n`/cover A dark fantasy novel about a shadow mage in a crumbling kingdom`\n`/cover romance contemporary, small town, bakery, cozy vibes`';
+        if (!this.imageGen) return 'Image generation service not available.';
+        try {
+          const providers = await this.imageGen.getAvailableProviders();
+          if (providers.length === 0) return '⚠️ No image generation API keys configured. Add a Together AI or OpenAI key in Settings.';
+
+          const result = await this.imageGen.generateBookCover({
+            title: 'Book Cover',
+            author: 'Author',
+            genre: args.split(',')[0]?.trim() || 'fiction',
+            description: args,
+          });
+
+          if (result.success) {
+            return `🎨 **Book cover generated!**\n\n📄 File: \`${result.filename}\`\n🖼️ Size: ${result.width}×${result.height}\n🤖 Provider: ${result.provider}\n\nView in the **Library** panel or download from project files.`;
+          }
+          return `⚠️ ${result.error}`;
+        } catch (err) {
+          return `❌ Cover generation failed: ${String(err)}`;
         }
       }
 
@@ -1481,6 +1518,7 @@ class AuthorClawGateway {
         }
 
         let aiResponse = '';
+        const projectProvider = (project as any).preferredProvider || undefined;
         try {
           await new Promise<void>((resolve, reject) => {
             gateway.handleMessage(
@@ -1491,7 +1529,8 @@ class AuthorClawGateway {
                 resolve();
               },
               projectContext,
-              (activeStep as any).taskType || undefined
+              (activeStep as any).taskType || undefined,
+              projectProvider
             ).catch(reject);
           });
 
@@ -1505,7 +1544,8 @@ class AuthorClawGateway {
                 'goal-engine',
                 (response) => { aiResponse = response; resolve(); },
                 projectContext,
-                'general'
+                'general',
+                projectProvider
               ).catch(reject);
             });
           }

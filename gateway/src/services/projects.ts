@@ -64,6 +64,7 @@ export interface Project {
   completedAt?: string;
   context: Record<string, any>;
   personaId?: string;     // Author persona assigned to this project
+  preferredProvider?: string; // Override AI provider: 'gemini' | 'claude' | 'openai' | 'deepseek' | 'ollama' | null (auto)
   pipelineId?: string;    // Parent pipeline ID (if part of a pipeline)
   pipelinePhase?: number; // Phase order within pipeline (1-6)
 }
@@ -939,6 +940,21 @@ Include relevant hashtags for each platform.`,
 - Review solicitation, ad optimization, newsletter follow-up
 
 Include specific actionable items with dates relative to launch day (L-30, L-14, L-7, L-Day, L+7, etc.)`,
+      },
+      {
+        label: 'Book cover concepts',
+        skill: 'book-launch',
+        taskType: 'marketing',
+        promptTemplate: `Generate 2 book cover concept ideas for: {{description}}
+
+For each concept provide:
+1. **Visual description** — Detailed scene, composition, imagery, key visual elements
+2. **Typography recommendation** — Font style suggestions, title placement (top/center/bottom), author name placement
+3. **Color palette** — 3-5 hex color codes with mood/emotion reasoning
+4. **Comparable covers** — 2-3 bestselling covers in this genre with a similar style
+5. **AI image generation prompt** — A detailed, ready-to-use prompt for generating the cover art with AI (describe the image only, no text)
+
+Mark the recommended concept clearly. Focus on genre-appropriate design that would stand out in Amazon thumbnail size.`,
       },
     ],
   },
